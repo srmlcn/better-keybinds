@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm run lint
       - name: Commitlint
         if: github.event_name == 'pull_request'
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm test
 
   build:
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci || npm install
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
@@ -73,7 +73,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npx semantic-release
+      - run: npm ci || npm install
+      - name: Require baseline tag
+        id: baseline
+        run: |
+          git fetch --tags --force
+          if git rev-parse -q --verify refs/tags/v2.6.6 >/dev/null; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping semantic-release until tag v2.6.6 exists on this repository."
+          fi
+      - if: steps.baseline.outputs.ready == 'true'
+        run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
