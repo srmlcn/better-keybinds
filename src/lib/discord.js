@@ -45,14 +45,20 @@ class DiscordBridge {
 
   findModule(filter, { searchExports = true } = {}) {
     const BdApi = this.BdApi;
-    try {
-      if (BdApi?.Webpack?.getModule) {
+    if (BdApi?.Webpack?.getModule) {
+      try {
         return BdApi.Webpack.getModule(filter, { searchExports }) || null;
+      } catch (error) {
+        this.warn(`Webpack.getModule threw: ${error?.message || error}`);
       }
-    } catch { /* fall through to legacy */ }
-    try {
-      if (typeof BdApi?.findModule === "function") return BdApi.findModule(filter) || null;
-    } catch { /* ignore */ }
+    }
+    if (typeof BdApi?.findModule === "function") {
+      try {
+        return BdApi.findModule(filter) || null;
+      } catch (error) {
+        this.warn(`legacy findModule threw: ${error?.message || error}`);
+      }
+    }
     return null;
   }
 
@@ -63,16 +69,50 @@ class DiscordBridge {
       if (byProps && BdApi?.Webpack?.getModule) {
         return BdApi.Webpack.getModule(byProps(...props), { searchExports: true }) || null;
       }
-    } catch { /* ignore */ }
+    } catch (error) {
+      this.warn(`byProps threw: ${error?.message || error}`);
+    }
     try {
       if (typeof BdApi?.findModuleByProps === "function") {
         return BdApi.findModuleByProps(...props) || null;
       }
-    } catch { /* ignore */ }
+    } catch (error) {
+      this.warn(`legacy findModuleByProps threw: ${error?.message || error}`);
+    }
     return this.findModule(
       (m) => m && typeof m === "object" && props.every((p) => m[p] !== undefined),
       { searchExports: true }
     );
+  }
+
+  findByStrings(...strings) {
+    const BdApi = this.BdApi;
+    try {
+      const byStrings = BdApi?.Webpack?.Filters?.byStrings;
+      if (byStrings && BdApi?.Webpack?.getModule) {
+        return BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+      }
+    } catch (error) {
+      this.warn(`byStrings threw: ${error?.message || error}`);
+    }
+    const mentions = (fn) => {
+      try {
+        return typeof fn === "function" && strings.every((s) => fn.toString().includes(s));
+      } catch {
+        return false;
+      }
+    };
+    return this.findModule((m) => {
+      if (typeof m === "function") return mentions(m);
+      if (m && typeof m === "object") {
+        try {
+          return Object.values(m).some(mentions);
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }, { searchExports: true });
   }
 
   cached(key, resolver) {
@@ -88,11 +128,25 @@ class DiscordBridge {
     }
     if (value) {
       this.cache.set(key, value);
-      this.debug(`webpack resolved ${key}`);
+      this.debug(`webpack resolved ${key} (${this.fingerprint(value)})`);
     } else {
       this.debug(`webpack miss ${key} (will retry)`);
     }
     return value;
+  }
+
+  // One-line shape summary so a wrong-module match is visible in the log.
+  fingerprint(mod, maxKeys = 40) {
+    if (!mod || (typeof mod !== "object" && typeof mod !== "function")) return String(mod);
+    let keys = [];
+    try {
+      keys = Object.keys(mod).sort();
+    } catch {
+      return "?";
+    }
+    const ctor = mod?.constructor?.name && mod.constructor.name !== "Object" ? ` ctor:${mod.constructor.name}` : "";
+    const shown = keys.slice(0, maxKeys).join(",");
+    return `${keys.length} keys${ctor} [${shown}]${keys.length > maxKeys ? "…" : ""}`;
   }
 
   getFlux() {
@@ -153,6 +207,22 @@ class DiscordBridge {
 
   getUserStore() {
     return this.cached("userStore", () => this.findByProps("getCurrentUser"));
+  }
+
+  // Module referencing the volume Flux event (actions/handler side).
+  // Resolved for diagnostics; never blind-called.
+  getAudioActions() {
+    return this.cached("audioActions", () => this.findByStrings("AUDIO_SET_OUTPUT_VOLUME"));
+  }
+
+  audioActionKeys(maxKeys = 12) {
+    const mod = this.getAudioActions();
+    if (!mod || (typeof mod !== "object" && typeof mod !== "function")) return [];
+    try {
+      return Object.keys(mod).sort().slice(0, maxKeys);
+    } catch {
+      return [];
+    }
   }
 
   dispatch(type, payload = {}) {
@@ -465,6 +535,8 @@ class DiscordBridge {
   probe() {
     const media = this.getMediaEngineStore();
     return {
+      audioActions: Boolean(this.getAudioActions()),
+      audioActionKeys: this.audioActionKeys(),
       channelActions: Boolean(this.getChannelActions()),
       channelRouter: Boolean(this.getChannelRouter()),
       discordUtils: this.hasGlobalSupport(),
@@ -512,6 +584,7 @@ class DiscordBridge {
       `platform: ${p.platform}`,
       `flux: ${yn(p.flux)}`,
       `mediaEngine: ${yn(p.mediaEngine)} (methods: ${p.mediaMethods.join(", ") || "none"})`,
+      `audioActions: ${yn(p.audioActions)} (exports: ${p.audioActionKeys.join(", ") || "none"})`,
       `voiceActions: ${yn(p.voiceActions)}`,
       `channelActions: ${yn(p.channelActions)}`,
       `channelRouter: ${yn(p.channelRouter)}`,

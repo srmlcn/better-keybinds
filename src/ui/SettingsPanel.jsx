@@ -375,7 +375,7 @@ function SettingsPanel(props) {
       width: 8
     }),
     statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
-    summary: { cursor: "pointer", fontSize: 13, fontWeight: 700 },
+    summary: { cursor: "pointer", fontSize: 12, fontWeight: 600, listStyle: "none", textAlign: "right" },
     title: { fontSize: 16, fontWeight: 700, margin: 0 },
     toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
   };
@@ -530,15 +530,8 @@ function SettingsPanel(props) {
         <button onClick={addBind} style={s.btnPrimary}>+ Add keybind</button>
       </div>
 
-      {binds.length === 0 ? (
-        <div style={{ ...s.small, marginTop: 12 }}>
-          No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.
-        </div>
-      ) : null}
-      {binds.map(renderBind)}
-
       <details ref={ioDetailsRef} style={s.details}>
-        <summary style={s.summary}>Import / export / reset</summary>
+        <summary style={s.summary}>Import / export / reset ▾</summary>
         <div style={s.toolbar}>
           <button onClick={doExport} style={s.btn}>Export</button>
           <button onClick={() => doImport(false)} style={s.btn}>Import (append)</button>
@@ -553,7 +546,14 @@ function SettingsPanel(props) {
           value={ioText}
         />
       </details>
-      <div style={s.small}>Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.</div>
+      <div style={{ ...s.small, marginTop: 6 }}>Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.</div>
+
+      {binds.length === 0 ? (
+        <div style={{ ...s.small, marginTop: 12 }}>
+          No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.
+        </div>
+      ) : null}
+      {binds.map(renderBind)}
 
       <h3 style={s.sectionTitle}>Diagnostics</h3>
       <div style={s.toolbar}>
@@ -569,6 +569,7 @@ function SettingsPanel(props) {
         <div style={s.statusGrid}>
           <span><span style={s.statusDot(status.flux)} />Flux</span>
           <span><span style={s.statusDot(status.mediaEngine)} />MediaEngine ({status.mediaMethods.length}/7)</span>
+          <span><span style={s.statusDot(status.audioActions)} />AudioActions</span>
           <span><span style={s.statusDot(status.voiceActions)} />Voice</span>
           <span><span style={s.statusDot(status.channelActions)} />Channel</span>
           <span><span style={s.statusDot(status.messageActions)} />Message</span>
