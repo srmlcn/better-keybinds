@@ -108,6 +108,34 @@ const ACTION_DEFS = [
     type: "message.send"
   },
   {
+    category: "Streaming",
+    description: "Start streaming your detected game to the voice channel.",
+    label: "Start streaming game",
+    params: [],
+    type: "stream.startGame"
+  },
+  {
+    category: "Streaming",
+    description: "Start streaming your screen to the voice channel.",
+    label: "Start streaming screen",
+    params: [],
+    type: "stream.startScreen"
+  },
+  {
+    category: "Streaming",
+    description: "Stop your active stream.",
+    label: "Stop streaming",
+    params: [],
+    type: "stream.stop"
+  },
+  {
+    category: "Streaming",
+    description: "Start streaming your game, or stop if already live.",
+    label: "Toggle game stream",
+    params: [],
+    type: "stream.toggleGame"
+  },
+  {
     category: "Utility",
     description: "Show a BetterDiscord toast notification.",
     label: "Show toast",
@@ -257,6 +285,14 @@ async function runAction(type, params, ctx) {
         return discord.setSelfDeaf(values.deafened);
       case "voice.disconnect":
         return discord.disconnectVoice();
+      case "stream.startGame":
+        return await discord.startGameStream();
+      case "stream.startScreen":
+        return await discord.startScreenStream();
+      case "stream.stop":
+        return await discord.stopOwnStream();
+      case "stream.toggleGame":
+        return await discord.toggleGameStream();
       case "nav.goToChannel":
         return discord.goToChannel(values.guildId.trim(), values.channelId.trim());
       case "message.send": {

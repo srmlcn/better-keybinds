@@ -54,6 +54,9 @@ module.exports = class BetterKeybinds {
     });
     this.engine.start();
     try {
+      this.discord.subscribeStreamEvents();
+    } catch { /* stream-key tracking is best-effort */ }
+    try {
       globalThis.BetterKeybinds = this;
     } catch { /* ignore */ }
     const enabled = state.binds.filter((b) => b.enabled).length;
@@ -83,6 +86,9 @@ module.exports = class BetterKeybinds {
       this.engine?.stop();
     } catch { /* ignore */ }
     this.engine = null;
+    try {
+      this.discord?.unsubscribeStreamEvents();
+    } catch { /* ignore */ }
     try {
       if (globalThis.BetterKeybinds === this) delete globalThis.BetterKeybinds;
     } catch { /* ignore */ }

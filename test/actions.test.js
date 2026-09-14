@@ -114,3 +114,24 @@ describe("runBind", () => {
     assert.equal((await a.runBind({ params: { volume: 999 }, type: "output.set" }, { discord })).ok, false);
   });
 });
+
+describe("stream actions", () => {
+  it("routes stream binds to the bridge", async () => {
+    const discord = fakeDiscord({
+      startGameStream: async () => ({ message: "Streaming Doom", ok: true }),
+      startScreenStream: async () => ({ message: "Streaming your screen", ok: true }),
+      stopOwnStream: async () => ({ message: "Stream stopped.", ok: true }),
+      toggleGameStream: async () => ({ message: "Streaming Doom", ok: true })
+    });
+    assert.equal((await a.runBind({ params: {}, type: "stream.startGame" }, { discord })).message, "Streaming Doom");
+    assert.equal((await a.runBind({ params: {}, type: "stream.startScreen" }, { discord })).message, "Streaming your screen");
+    assert.equal((await a.runBind({ params: {}, type: "stream.stop" }, { discord })).message, "Stream stopped.");
+    assert.equal((await a.runBind({ params: {}, type: "stream.toggleGame" }, { discord })).message, "Streaming Doom");
+  });
+  it("validates stream actions take no params", () => {
+    assert.deepEqual(a.validateAction("stream.startGame", {}), []);
+    assert.deepEqual(a.validateAction("stream.stop", {}), []);
+    assert.ok(a.getActionDef("stream.toggleGame"));
+    assert.ok(a.actionTypes().includes("stream.startScreen"));
+  });
+});

@@ -17,6 +17,11 @@ class DiscordBridge {
     this.keymapCache = new Map();
     this.lastSetOutputVolume = null;
     this.lastSetInputVolume = null;
+    this.streamKey = null;
+    this.streamSubscribed = false;
+    this.onStreamCreate = null;
+    this.onStreamDelete = null;
+    this.nativeCache = null;
   }
 
   debug(message) {
@@ -43,6 +48,20 @@ class DiscordBridge {
     this.utilsTried = false;
     this.utilsCache = null;
     this.keymapCache.clear();
+    this.nativeCache = null;
+  }
+
+  // Resolve a Flux store by registered name. Immune to method renames,
+  // so it runs before prop filters in every store getter.
+  getStoreByName(name) {
+    try {
+      const getStore = this.BdApi?.Webpack?.getStore;
+      if (typeof getStore !== "function") return null;
+      const store = getStore.call(this.BdApi.Webpack, name);
+      return store && (typeof store === "object" || typeof store === "function") ? store : null;
+    } catch {
+      return null;
+    }
   }
 
   findModule(filter, { searchExports = true } = {}) {
@@ -172,6 +191,11 @@ class DiscordBridge {
 
   getMediaEngineStore() {
     return this.cached("mediaEngine", () => {
+      const named = this.getStoreByName("MediaEngineStore");
+      if (named) {
+        this.debug("mediaEngine via getStore");
+        return named;
+      }
       // Strong filter first: the real store exposes the full audio surface,
       // which rules out component props and other partial lookalikes.
       const strong = (m) => m && typeof m === "object" && !m.$$typeof
@@ -214,13 +238,69 @@ class DiscordBridge {
 
   getSelectedChannelStore() {
     return this.cached("selectedChannel", () => (
-      this.findByProps("getCurrentlySelectedChannelId")
+      this.getStoreByName("SelectedChannelStore")
+      || this.findByProps("getCurrentlySelectedChannelId")
       || this.findByProps("getLastSelectedChannelId")
     ));
   }
 
   getUserStore() {
-    return this.cached("userStore", () => this.findByProps("getCurrentUser"));
+    return this.cached("userStore", () => (
+      this.getStoreByName("UserStore")
+      || this.findByProps("getCurrentUser")
+    ));
+  }
+
+  getRunningGameStore() {
+    return this.cached("runningGame", () => (
+      this.getStoreByName("RunningGameStore")
+      || this.findByProps("getRunningGames", "getVisibleGame")
+      || this.findModule((m) => typeof m?.getGameForPID === "function" && typeof m?.getRunningGames === "function")
+    ));
+  }
+
+  getStreamingStore() {
+    return this.cached("streaming", () => (
+      this.getStoreByName("ApplicationStreamingStore")
+      || this.findByProps("getCurrentUserActiveStream")
+    ));
+  }
+
+  hasSoundshareState(mod) {
+    try {
+      if (!mod || typeof mod.getState !== "function") return false;
+      const state = mod.getState();
+      return Boolean(state) && typeof state === "object" && typeof state.soundshareEnabled === "boolean";
+    } catch {
+      return false;
+    }
+  }
+
+  getStreamingSettingsStore() {
+    return this.cached("streamingSettings", () => {
+      const named = this.getStoreByName("ApplicationStreamingSettingsStore");
+      if (named && this.hasSoundshareState(named)) {
+        this.debug("streamingSettings via getStore");
+        return named;
+      }
+      const shaped = this.findModule((m) => this.hasSoundshareState(m), { searchExports: true });
+      if (shaped) this.debug("streamingSettings via state shape");
+      return shaped;
+    });
+  }
+
+  getChannelStore() {
+    return this.cached("channelStore", () => (
+      this.getStoreByName("ChannelStore")
+      || this.findByProps("getChannel")
+    ));
+  }
+
+  getVoiceStateStore() {
+    return this.cached("voiceState", () => (
+      this.getStoreByName("VoiceStateStore")
+      || this.findByProps("getVoiceStateForUser", "getVoiceStatesForChannel")
+    ));
   }
 
   // Module referencing the volume Flux event (actions/handler side).
@@ -549,6 +629,402 @@ class DiscordBridge {
     }
   }
 
+  // ---- streaming (Go Live) ----
+
+  // Pull the function whose own source contains the needle out of a
+  // string-matched module. Rejects near-misses from token-only matches.
+  extractCodeFn(mod, needle) {
+    const mentions = (fn) => {
+      try {
+        return typeof fn === "function" && fn.toString().includes(needle);
+      } catch {
+        return false;
+      }
+    };
+    if (mentions(mod)) return mod;
+    if (mod && typeof mod === "object") {
+      try {
+        for (const value of Object.values(mod)) {
+          if (mentions(value)) return value;
+        }
+      } catch { /* ignore */ }
+    }
+    return null;
+  }
+
+  // Find an action creator by a string literal in its source (same idea as
+  // Vencord's findByCode). Misses cache for 60s: the full sweep is slow.
+  findCodeFunction(needle) {
+    const key = `code:${needle}`;
+    if (this.cache.has(key)) return this.cache.get(key);
+    const now = Date.now();
+    if (now - (this.lastAttempt.get(key) || 0) < 60000) return null;
+    this.lastAttempt.set(key, now);
+    let fn = null;
+    try {
+      fn = this.extractCodeFn(this.findByStrings(needle), needle);
+      if (!fn) {
+        const mods = this.getAllModules(() => true, { searchExports: true });
+        if (mods) {
+          for (const mod of mods) {
+            fn = this.extractCodeFn(mod, needle);
+            if (fn) break;
+          }
+        }
+      }
+    } catch {
+      fn = null;
+    }
+    if (fn) {
+      this.cache.set(key, fn);
+      this.debug(`webpack resolved ${key} (${this.fingerprint(fn)})`);
+    } else {
+      this.debug(`webpack miss ${key} (will retry)`);
+    }
+    return fn;
+  }
+
+  getMediaEngine() {
+    try {
+      const engine = this.getMediaEngineStore()?.getMediaEngine?.();
+      return engine && (typeof engine === "object" || typeof engine === "function") ? engine : null;
+    } catch {
+      return null;
+    }
+  }
+
+  getChannel(channelId) {
+    try {
+      const store = this.getChannelStore();
+      if (store && typeof store.getChannel === "function" && channelId) {
+        return store.getChannel(String(channelId)) || null;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  getVoiceChannelId() {
+    try {
+      const selected = this.getSelectedChannelStore();
+      if (typeof selected?.getVoiceChannelId === "function") {
+        const id = selected.getVoiceChannelId();
+        if (id) return String(id);
+      }
+    } catch { /* voice-state fallback below */ }
+    try {
+      const me = this.getUserStore()?.getCurrentUser?.()?.id;
+      const store = this.getVoiceStateStore();
+      const state = me && typeof store?.getVoiceStateForUser === "function"
+        ? store.getVoiceStateForUser(me)
+        : null;
+      if (state?.channelId) return String(state.channelId);
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  getSelfStream() {
+    try {
+      const store = this.getStreamingStore();
+      if (store && typeof store.getCurrentUserActiveStream === "function") {
+        return store.getCurrentUserActiveStream() || null;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  // Prefer the key Discord announced (STREAM_CREATE), then the stream's own
+  // key, then the documented type:guild:channel:owner construction.
+  resolveStreamKey(stream = null) {
+    if (this.streamKey) return this.streamKey;
+    const s = stream || this.getSelfStream();
+    if (!s || typeof s !== "object") return null;
+    if (typeof s.streamKey === "string" && s.streamKey) return s.streamKey;
+    const parts = [s.guildId, s.channelId, s.ownerId].filter(Boolean).map(String);
+    if (s.streamType && parts.length >= 2) return `${s.streamType}:${parts.join(":")}`;
+    return null;
+  }
+
+  subscribeStreamEvents() {
+    if (this.streamSubscribed) return;
+    const flux = this.getFlux();
+    if (!flux || typeof flux.subscribe !== "function") return;
+    this.onStreamCreate = (payload) => {
+      try {
+        const key = typeof payload === "string" ? payload : payload?.streamKey || null;
+        if (key) {
+          this.streamKey = key;
+          this.debug(`stream key tracked: ${key}`);
+        }
+      } catch { /* ignore */ }
+    };
+    this.onStreamDelete = () => {
+      this.streamKey = null;
+      this.debug("stream key cleared");
+    };
+    try {
+      flux.subscribe("STREAM_CREATE", this.onStreamCreate);
+      flux.subscribe("STREAM_DELETE", this.onStreamDelete);
+      this.streamSubscribed = true;
+    } catch { /* ignore */ }
+  }
+
+  unsubscribeStreamEvents() {
+    if (!this.streamSubscribed) return;
+    this.streamSubscribed = false;
+    try {
+      const flux = this.getFlux();
+      if (flux && typeof flux.unsubscribe === "function") {
+        if (this.onStreamCreate) flux.unsubscribe("STREAM_CREATE", this.onStreamCreate);
+        if (this.onStreamDelete) flux.unsubscribe("STREAM_DELETE", this.onStreamDelete);
+      }
+    } catch { /* ignore */ }
+    this.onStreamCreate = null;
+    this.onStreamDelete = null;
+    this.streamKey = null;
+  }
+
+  // Discord's own foreground game first, else the most recently focused
+  // running game (launchers last). Never throws.
+  pickGame() {
+    const store = this.getRunningGameStore();
+    if (!store) return { detection: null, game: null, reason: "store-missing" };
+    let detection = null;
+    try {
+      if (typeof store.isDetectionEnabled === "function") detection = store.isDetectionEnabled() !== false;
+    } catch { /* ignore */ }
+    try {
+      if (typeof store.getVisibleGame === "function") {
+        const visible = store.getVisibleGame();
+        if (visible && !visible.hidden) return { detection, game: visible, reason: "visible" };
+      }
+    } catch { /* ignore */ }
+    let running = [];
+    try {
+      if (typeof store.getRunningGames === "function") running = store.getRunningGames() || [];
+    } catch { /* ignore */ }
+    if (!Array.isArray(running)) running = [];
+    const usable = running.filter((g) => g && !g.hidden);
+    usable.sort((a, b) => {
+      const launcher = (a.isLauncher ? 1 : 0) - (b.isLauncher ? 1 : 0);
+      if (launcher !== 0) return launcher;
+      return (Number(b.lastFocused) || 0) - (Number(a.lastFocused) || 0);
+    });
+    if (usable.length) return { detection, game: usable[0], reason: "running" };
+    return { detection, game: null, reason: detection === false ? "disabled" : "none" };
+  }
+
+  // Match a detected game to a desktop capture source: process ID first,
+  // then game/exe name against window titles.
+  matchGameSource(sources, game) {
+    if (!Array.isArray(sources) || !game) return null;
+    const pid = Number(game.pid);
+    if (Number.isFinite(pid) && pid > 0) {
+      const byPid = sources.find((s) => Number(s?.sourcePid) === pid);
+      if (byPid) return byPid;
+    }
+    const norm = (s) => String(s || "").toLowerCase().replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, " ").trim();
+    const exeBase = String(game.exePath || "").split(/[\\/]/).pop();
+    const wants = [game.name, exeBase].map(norm).filter(Boolean);
+    for (const want of wants) {
+      const hit = sources.find((s) => {
+        const name = norm(s?.name);
+        return name && (name.includes(want) || want.includes(name));
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  pickScreenSource(sources) {
+    if (!Array.isArray(sources)) return null;
+    return sources.find((s) => s?.type === "screen" || String(s?.id || "").startsWith("screen:")) || null;
+  }
+
+  async getDesktopSources() {
+    const fn = this.findCodeFunction("desktop sources");
+    if (!fn) throw new Error("capture-unavailable");
+    const engine = this.getMediaEngine();
+    let lastError = null;
+    // The enumerator may not need the engine at all; the null attempt also
+    // covers sessions where the media store isn't resolvable.
+    for (const [arg, label] of [[engine, "engine"], [null, "null-engine"]]) {
+      try {
+        const sources = await fn(arg, ["screen", "window"], null);
+        if (Array.isArray(sources)) {
+          this.debug(`desktop sources via ${label}: ${sources.length}`);
+          return sources;
+        }
+        lastError = new Error("capture-bad-result");
+      } catch (error) {
+        lastError = error;
+        this.debug(`desktop sources via ${label} threw: ${error?.message || error}`);
+      }
+    }
+    throw lastError || new Error("capture-failed");
+  }
+
+  isSoundshareEnabled() {
+    try {
+      const state = this.getStreamingSettingsStore()?.getState?.();
+      if (state && typeof state.soundshareEnabled === "boolean") return state.soundshareEnabled;
+    } catch { /* ignore */ }
+    return true;
+  }
+
+  // Resolves the predicate's truthy value, or null on timeout.
+  async waitFor(predicate, { intervalMs = 400, timeoutMs = 3500 } = {}) {
+    const started = Date.now();
+    for (;;) {
+      let value = null;
+      try {
+        value = await predicate();
+      } catch {
+        value = null;
+      }
+      if (value) return value;
+      if (Date.now() - started >= timeoutMs) return null;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  async resolveStreamTarget() {
+    const channelId = this.getVoiceChannelId();
+    if (!channelId) return { error: "Join a voice channel first, then try again." };
+    const channel = this.getChannel(channelId);
+    return { channelId, guildId: channel?.guild_id ?? null };
+  }
+
+  async beginStream({ channelId, guildId, label, pid = null, source }) {
+    const startFn = this.findCodeFunction('type:"STREAM_START"');
+    if (!startFn || !source?.id) {
+      return { ok: false, message: "Couldn't reach Discord's streaming controls — Discord may have updated." };
+    }
+    const sound = this.isSoundshareEnabled();
+    const sourceName = source.name || label;
+    try {
+      await startFn(guildId ?? null, channelId, {
+        audioSourceId: sourceName,
+        pid: pid ?? null,
+        sound,
+        sourceId: source.id,
+        sourceName
+      });
+    } catch (error) {
+      this.warn(`stream start threw: ${error?.message || error}`);
+      return { ok: false, message: `Couldn't start streaming ${label}.` };
+    }
+    const live = await this.waitFor(() => this.getSelfStream());
+    if (live) {
+      this.info(`streaming ${label} (sound ${sound ? "on" : "off"})`);
+      return { ok: true, message: `Streaming ${label}` };
+    }
+    return { ok: false, message: `Couldn't start streaming ${label} — try again.` };
+  }
+
+  async startGameStream() {
+    const target = await this.resolveStreamTarget();
+    if (target.error) return { ok: false, message: target.error };
+    if (this.getSelfStream()) return { ok: true, message: "Already streaming — stop first to switch." };
+    const { detection, game } = this.pickGame();
+    if (!game) {
+      if (detection === false) {
+        return { ok: false, message: "Game detection is off — turn it on in Discord Settings → Game Activity." };
+      }
+      if (!this.getRunningGameStore()) {
+        return { ok: false, message: "Couldn't reach Discord's game detection — Discord may have updated." };
+      }
+      return { ok: false, message: "No game detected — launch a game first." };
+    }
+    let sources;
+    try {
+      sources = await this.getDesktopSources();
+    } catch (error) {
+      this.warn(`desktop sources failed: ${error?.message || error}`);
+      return { ok: false, message: "Couldn't reach screen capture — reload Discord (Ctrl+R) and try again." };
+    }
+    if (!sources.length) return { ok: false, message: "No capture sources found." };
+    const label = game.name || "your game";
+    const source = this.matchGameSource(sources, game);
+    if (!source) {
+      return { ok: false, message: `Couldn't find a window for ${label} — make sure it's not minimized.` };
+    }
+    return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label, pid: game.pid ?? null, source });
+  }
+
+  async startScreenStream() {
+    const target = await this.resolveStreamTarget();
+    if (target.error) return { ok: false, message: target.error };
+    if (this.getSelfStream()) return { ok: true, message: "Already streaming — stop first to switch." };
+    let sources;
+    try {
+      sources = await this.getDesktopSources();
+    } catch (error) {
+      this.warn(`desktop sources failed: ${error?.message || error}`);
+      return { ok: false, message: "Couldn't reach screen capture — reload Discord (Ctrl+R) and try again." };
+    }
+    const source = this.pickScreenSource(sources);
+    if (!source) return { ok: false, message: "Couldn't find your screen to share." };
+    return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label: "your screen", source });
+  }
+
+  async stopOwnStream() {
+    const stream = this.getSelfStream();
+    if (!stream) return { ok: true, message: "Not streaming." };
+    const key = this.resolveStreamKey(stream);
+    const stopFn = this.findCodeFunction('type:"STREAM_STOP"');
+    if (!key || !stopFn) return { ok: false, message: "Couldn't stop the stream." };
+    try {
+      await stopFn(key);
+    } catch (error) {
+      this.warn(`stream stop threw: ${error?.message || error}`);
+      return { ok: false, message: "Couldn't stop the stream — try again." };
+    }
+    const stopped = await this.waitFor(() => !this.getSelfStream(), { timeoutMs: 2500 });
+    if (stopped) {
+      this.info("stream stopped");
+      this.streamKey = null;
+      return { ok: true, message: "Stream stopped." };
+    }
+    return { ok: false, message: "Couldn't stop the stream — try again." };
+  }
+
+  async toggleGameStream() {
+    return this.getSelfStream() ? this.stopOwnStream() : this.startGameStream();
+  }
+
+  // Probe native helper modules for capture/voice APIs (keys only, cached).
+  inspectNativeModules() {
+    if (this.nativeCache) return this.nativeCache;
+    const out = {};
+    try {
+      const req = globalThis.DiscordNative?.nativeModules?.requireModule;
+      if (typeof req === "function") {
+        for (const name of [
+          "discord_utils", "discord_voice", "discord_rpc", "discord_overlay",
+          "discord_hook", "discord_game_sdk", "discord_dispatch", "discord_cloudsync",
+          "discord_desktop_capture", "discord_screen_capture", "discord_video",
+          "discord_av", "discord_krisp", "discord_clips"
+        ]) {
+          try {
+            const mod = req(name);
+            if (mod && (typeof mod === "object" || typeof mod === "function")) {
+              let keys = [];
+              try {
+                keys = Object.keys(mod).sort();
+              } catch { keys = []; }
+              out[name] = keys.slice(0, 40);
+            }
+          } catch { /* not present */ }
+        }
+      }
+    } catch { /* ignore */ }
+    this.nativeCache = out;
+    const names = Object.keys(out);
+    this.info(`native modules: ${names.length ? names.map((n) => `${n}(${out[n].length})`).join(", ") : "none"}`);
+    for (const name of names) this.debug(`native ${name}: ${out[name].join(", ").slice(0, 400)}`);
+    return out;
+  }
+
   getPlatform() {
     try {
       const p = globalThis.DiscordNative?.process?.platform;
@@ -757,6 +1233,51 @@ class DiscordBridge {
     return out;
   }
 
+  // Snapshot of streaming dependencies: stores, action creators,
+  // capture engine, detected games, and own stream state.
+  probeStreaming() {
+    const runningGame = Boolean(this.getRunningGameStore());
+    const store = Boolean(this.getStreamingStore());
+    const settings = Boolean(this.getStreamingSettingsStore());
+    const channel = Boolean(this.getChannelStore());
+    const voiceState = Boolean(this.getVoiceStateStore());
+    const startFn = Boolean(this.findCodeFunction('type:"STREAM_START"'));
+    const stopFn = Boolean(this.findCodeFunction('type:"STREAM_STOP"'));
+    const sourcesFn = Boolean(this.findCodeFunction("desktop sources"));
+    const engine = Boolean(this.getMediaEngine());
+    let games = null;
+    let gameName = null;
+    try {
+      const gs = this.getRunningGameStore();
+      const list = gs?.getRunningGames?.();
+      if (Array.isArray(list)) {
+        games = list.length;
+        let visible = null;
+        try {
+          visible = gs.getVisibleGame?.();
+        } catch { visible = null; }
+        gameName = visible?.name ?? list.find((g) => g && !g.hidden)?.name ?? null;
+      }
+    } catch { /* ignore */ }
+    return {
+      channel,
+      engine,
+      gameName,
+      games,
+      ready: runningGame && store && startFn && stopFn && sourcesFn,
+      runningGame,
+      selfStream: Boolean(this.getSelfStream()),
+      settings,
+      sourcesFn,
+      startFn,
+      stopFn,
+      store,
+      trackedKey: Boolean(this.streamKey),
+      voiceChannel: this.getVoiceChannelId(),
+      voiceState
+    };
+  }
+
   // Snapshot of every Discord dependency for the diagnostics panel.
   probe() {
     const media = this.getMediaEngineStore();
@@ -777,12 +1298,14 @@ class DiscordBridge {
           .filter((k) => typeof media[k] === "function")
         : [],
       messageActions: Boolean(this.getMessageActions()),
+      nativeModules: this.inspectNativeModules(),
       outputTracked: this.lastSetOutputVolume,
       outputVolume: this.getOutputVolume(),
       platform: this.getPlatform(),
       selectedChannel: Boolean(this.getSelectedChannelStore()),
       selfDeaf: this.isSelfDeaf(),
       selfMute: this.isSelfMute(),
+      streaming: this.probeStreaming(),
       voiceActions: Boolean(this.getVoiceActions())
     };
   }
@@ -807,13 +1330,21 @@ class DiscordBridge {
     const osub = ap.hasOutputVolumeSubscriber === true
       ? `yes${typeof ap.fluxSubCount === "number" ? `(${ap.fluxSubCount})` : ""}`
       : ap.hasOutputVolumeSubscriber === false ? "NO" : "?";
-    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
+    const s = p.streaming || {};
+    const stm = `stm:${s.ready ? "ok" : "MISS"} live:${s.selfStream ? "Y" : "n"} g:${s.games ?? "?"}`;
+    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"} ${stm}`;
   }
 
   diagnosticsText(header = "") {
     const p = this.probe();
     const yn = (v) => (v ? "found" : "MISSING");
     const val = (v) => (v === null || v === undefined ? "unreadable" : String(v));
+    const s = p.streaming || {};
+    const natives = p.nativeModules && typeof p.nativeModules === "object" ? p.nativeModules : {};
+    const nativeNames = Object.keys(natives);
+    const nativeSummary = nativeNames.length
+      ? nativeNames.map((n) => `${n}(${natives[n].length}): ${natives[n].slice(0, 10).join(",")}`).join(" | ")
+      : "none";
     return [
       header,
       `time: ${new Date().toISOString()}`,
@@ -843,7 +1374,14 @@ class DiscordBridge {
       `inputVolume: ${val(p.inputVolume)}`,
       `inputTracked: ${p.inputTracked ?? "none"}`,
       `selfMute: ${val(p.selfMute)}`,
-      `selfDeaf: ${val(p.selfDeaf)}`
+      `selfDeaf: ${val(p.selfDeaf)}`,
+      `streamStores: runningGame ${yn(s.runningGame)}, streaming ${yn(s.store)}, settings ${yn(s.settings)}, channel ${yn(s.channel)}, voiceState ${yn(s.voiceState)}`,
+      `streamFns: start ${yn(s.startFn)}, stop ${yn(s.stopFn)}, sources ${yn(s.sourcesFn)}`,
+      `streamEngine: ${yn(s.engine)}`,
+      `games: ${s.games ?? "unreadable"}${s.gameName ? ` (visible: ${s.gameName})` : ""}`,
+      `voiceChannel: ${s.voiceChannel || "none"}`,
+      `selfStream: ${s.selfStream ? "yes" : "no"} (trackedKey: ${s.trackedKey ? "yes" : "no"})`,
+      `nativeModules: ${nativeSummary}`
     ].filter(Boolean).join("\n");
   }
 

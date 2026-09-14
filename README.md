@@ -26,6 +26,7 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 | Output volume | Set / Adjust / Toggle | Toggle flips between levels A and B; default 50/100 |
 | Input volume | Set / Adjust | Mic level, same 0–100 scale |
 | Self voice | Toggle/Set mute, Toggle/Set deafen, Disconnect | Set is a no-op when already in that state |
+| Streaming | Start game, Start screen, Stop, Toggle game | Streams to your current voice channel |
 | Channels | Go to channel | Needs Guild + Channel ID (Developer Mode → Copy ID) |
 | Messages | Send message | Current channel, or a saved channel ID |
 | Utility | Toast, Open URL | Toast is handy for testing that a chord fires |
@@ -50,6 +51,23 @@ Every volume write is verified by reading the value back from Discord's own audi
 When Discord's volume store isn't readable, the plugin tracks the last value it set, so toggle and adjust binds keep working across presses. Tracking resets on reload (the first toggle press then sets level B). If you change volume in Discord's own settings, the next toggle press resyncs within one hop.
 
 Discord's Settings → Voice & Video slider does not always repaint while open; close and reopen Settings to see the new position. The toast value is authoritative, not the slider.
+
+## Streaming
+
+The Streaming actions Go Live in your current voice channel and reuse Discord's own streaming controls, so quality/sound defaults match the normal Go Live button. Requirements:
+
+- You're in a voice channel (server or DM call).
+- For **Start streaming game**: Discord detects your game. Detection comes from Settings → **Game Activity** — if your game isn't listed there as "Now playing", start the game first, or add it manually in Game Activity.
+- The game window isn't minimized (minimized windows often disappear from capture sources).
+
+Behavior:
+
+- **Start streaming game** picks your foreground game, or the most recently focused running game, and streams that window — no picker.
+- **Start streaming screen** streams your primary screen.
+- **Stop streaming** ends your stream; it's a no-op when you're not live.
+- **Toggle game stream** starts your game stream, or stops if you're already live.
+
+Every stream start/stop is verified against Discord's live stream state before the toast reports success. Starting while already live is a no-op ("Already streaming — stop first to switch.").
 
 ## Import / export
 
@@ -76,6 +94,8 @@ Yes — three layers, easiest first:
 2. **Discord console**: Settings → BetterDiscord → Developer → enable **DevTools**, then `Ctrl+Shift+I` (`Cmd+Opt+I` on Mac). `[BetterKeybinds]` lines mirror the in-plugin log (disable with "Debug logging to console"). Useful probes:
    - `BetterKeybinds.discord.getOutputVolume()` — current speaker value
    - `BetterKeybinds.discord.probeSummary()` — one-line module status
+   - `BetterKeybinds.discord.pickGame()` — detected game for streaming
+   - `BetterKeybinds.discord.getSelfStream()` — your active stream, if any
    - `BetterKeybinds.runBindById("b_…", "console")` — run a bind by ID
 3. **Debug log file**: Settings → BetterDiscord → Developer → **Debug Logs** writes all console output to `debug.log` in the BetterDiscord folder (`%appdata%/BetterDiscord` on Windows, `~/.config/BetterDiscord` on Linux). Turn off when done — it grows fast.
 
@@ -89,6 +109,9 @@ If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps
 - **"Couldn't reach" toast**: Discord renamed internals. Check console (`Ctrl+Shift+I`) for `[BetterKeybinds]` lines.
 - **Global shows In-app only**: native module blocked or unsupported client — in-app still works. Re-check after Discord restart.
 - **Global chord does nothing on Linux/Mac**: platform keycodes come from Discord's key map with a Windows fallback; unresolvable keys are reported.
+- **"No game detected" toast**: Discord doesn't see a running game. Check Settings → Game Activity for "Now playing"; add the game manually if needed.
+- **"Couldn't find a window" toast**: the game was detected but has no capture source. Unminimize/restore the game window and retry.
+- **"Couldn't reach screen capture" toast**: Discord's capture enumerator wasn't found. Reload Discord (Ctrl+R) and retry.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
 - Console access: the running instance is exposed as `globalThis.BetterKeybinds`.
 

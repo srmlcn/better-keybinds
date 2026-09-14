@@ -368,3 +368,314 @@ describe("scanAudioCandidates", () => {
     assert.ok(logged.some((m) => m.includes("enumeration unsupported")));
   });
 });
+
+describe("getStoreByName", () => {
+  it("prefers the named store over prop search", () => {
+    const named = { getOutputVolume: () => 42 };
+    const d = new DiscordBridge({
+      Webpack: {
+        getModule: () => null,
+        getStore: (name) => (name === "MediaEngineStore" ? named : null)
+      }
+    });
+    assert.equal(d.getMediaEngineStore(), named);
+    assert.equal(d.getOutputVolume(), 42);
+  });
+  it("falls back to props when getStore is missing or throws", () => {
+    const { d } = stubbed();
+    assert.ok(d.getMediaEngineStore());
+    const throwing = new DiscordBridge({
+      Webpack: {
+        Filters: { byProps: (...props) => (m) => m && props.every((p) => m[p] !== undefined) },
+        getModule: (filter) => {
+          const store = { getOutputVolume: () => 7, setOutputVolume: () => {} };
+          try {
+            return filter(store) ? store : null;
+          } catch {
+            return null;
+          }
+        },
+        getStore: () => { throw new Error("nope"); }
+      }
+    });
+    assert.equal(throwing.getOutputVolume(), 7);
+  });
+});
+
+describe("findCodeFunction", () => {
+  function needleFn() {
+    return { options: 1, payload: 'type:"STREAM_START"' };
+  }
+  it("extracts the function whose source contains the needle", () => {
+    const container = { other: () => 1, start: needleFn };
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: (filter) => {
+          const candidates = [container, ...Object.values(container)];
+          return candidates.find((m) => { try { return filter(m); } catch { return false; } }) || null;
+        }
+      }
+    });
+    assert.equal(d.findCodeFunction('type:"STREAM_START"'), needleFn);
+  });
+  it("sweeps past a wrong first match and caches misses", () => {
+    const good = { start: needleFn };
+    const wrong = { unrelated() { return 1; } };
+    let sweeps = 0;
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => wrong,
+        getModules: () => { sweeps += 1; return [wrong, good]; }
+      }
+    });
+    assert.equal(d.findCodeFunction('type:"STREAM_START"'), needleFn);
+    assert.equal(sweeps, 1);
+    const missing = new DiscordBridge({
+      Webpack: { Filters: {}, getModule: () => null, getModules: () => { sweeps += 1; return []; } }
+    });
+    assert.equal(missing.findCodeFunction("ABSENT_XYZ"), null);
+    assert.equal(missing.findCodeFunction("ABSENT_XYZ"), null);
+    assert.equal(sweeps, 2);
+  });
+});
+
+describe("pickGame", () => {
+  function bridgeWithGames(store) {
+    const d = new DiscordBridge({});
+    d.cache.set("runningGame", store);
+    return d;
+  }
+  it("prefers the visible game", () => {
+    const d = bridgeWithGames({
+      getRunningGames: () => [{ lastFocused: 9, name: "Old" }],
+      getVisibleGame: () => ({ name: "Doom", pid: 4242 }),
+      isDetectionEnabled: () => true
+    });
+    const { detection, game, reason } = d.pickGame();
+    assert.equal(reason, "visible");
+    assert.equal(game.name, "Doom");
+    assert.equal(detection, true);
+  });
+  it("falls back to focused non-launcher games", () => {
+    const d = bridgeWithGames({
+      getRunningGames: () => [
+        { hidden: true, name: "Hidden" },
+        { isLauncher: true, lastFocused: 99, name: "Launcher" },
+        { lastFocused: 5, name: "Doom" }
+      ],
+      getVisibleGame: () => null,
+      isDetectionEnabled: () => true
+    });
+    const { game, reason } = d.pickGame();
+    assert.equal(reason, "running");
+    assert.equal(game.name, "Doom");
+  });
+  it("reports disabled detection and empty states", () => {
+    const off = bridgeWithGames({ getRunningGames: () => [], getVisibleGame: () => null, isDetectionEnabled: () => false });
+    assert.deepEqual([off.pickGame().reason, off.pickGame().detection], ["disabled", false]);
+    const empty = bridgeWithGames({ getRunningGames: () => [], getVisibleGame: () => null, isDetectionEnabled: () => true });
+    assert.equal(empty.pickGame().reason, "none");
+    assert.equal(new DiscordBridge({}).pickGame().reason, "store-missing");
+  });
+});
+
+describe("source matching", () => {
+  const d = new DiscordBridge({});
+  it("matches by process id with coercion", () => {
+    const sources = [{ id: "window:1:0", name: "Chat", sourcePid: 111 }, { id: "window:2:0", name: "DOOM", sourcePid: "4242" }];
+    assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }).id, "window:2:0");
+  });
+  it("falls back to game and exe names", () => {
+    const sources = [{ id: "window:2:0", name: "DOOM Eternal", sourcePid: null }];
+    assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else" }).id, "window:2:0");
+    assert.equal(d.matchGameSource(sources, { name: "Unrelated" }), null);
+    assert.equal(d.matchGameSource([], { name: "Doom", pid: 1 }), null);
+  });
+  it("picks screen sources by type or id", () => {
+    assert.equal(d.pickScreenSource([{ id: "window:1:0" }, { id: "screen:0:0" }]).id, "screen:0:0");
+    assert.equal(d.pickScreenSource([{ id: "abc", type: "screen" }]).id, "abc");
+    assert.equal(d.pickScreenSource([{ id: "window:1:0" }]), null);
+  });
+});
+
+describe("resolveStreamKey", () => {
+  it("prefers tracked, then explicit, then constructed keys", () => {
+    const d = new DiscordBridge({});
+    d.streamKey = "tracked:key";
+    assert.equal(d.resolveStreamKey({ channelId: "c", guildId: "g", ownerId: "u", streamType: "guild" }), "tracked:key");
+    d.streamKey = null;
+    assert.equal(d.resolveStreamKey({ streamKey: "explicit" }), "explicit");
+    assert.equal(
+      d.resolveStreamKey({ channelId: "c", guildId: "g", ownerId: "u", streamType: "guild" }),
+      "guild:g:c:u"
+    );
+    assert.equal(d.resolveStreamKey({ channelId: "c", guildId: null, ownerId: "u", streamType: "call" }), "call:c:u");
+    assert.equal(d.resolveStreamKey({}), null);
+    assert.equal(d.resolveStreamKey(null), null);
+  });
+});
+
+describe("waitFor", () => {
+  it("resolves truthy values and times out to null", async () => {
+    const d = new DiscordBridge({});
+    assert.equal(await d.waitFor(() => "yes", { timeoutMs: 50 }), "yes");
+    let n = 0;
+    assert.equal(await d.waitFor(() => { n += 1; return n >= 3 ? "late" : null; }, { intervalMs: 5, timeoutMs: 500 }), "late");
+    assert.equal(await d.waitFor(() => null, { intervalMs: 5, timeoutMs: 30 }), null);
+  });
+});
+
+describe("stream actions", () => {
+  function streamBridge({ games, inVoice = true, selfStream = null, sources, startFn = null, stopFn = null } = {}) {
+    const state = { stream: selfStream };
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => (inVoice ? "vc1" : null) });
+    d.cache.set("channelStore", { getChannel: () => ({ guild_id: "g1" }) });
+    d.cache.set("streaming", { getCurrentUserActiveStream: () => state.stream });
+    d.cache.set("runningGame", {
+      getRunningGames: () => games ?? [{ lastFocused: 5, name: "Doom", pid: 4242 }],
+      getVisibleGame: () => null,
+      isDetectionEnabled: () => true
+    });
+    d.cache.set("code:desktop sources", async () => sources ?? [{ id: "window:2:0", name: "DOOM", sourcePid: 4242 }]);
+    d.cache.set("code:type:\"STREAM_START\"", startFn || (async (guildId, channelId, opts) => {
+      calls.push([guildId, channelId, opts]);
+      state.stream = { channelId, guildId, ownerId: "u1", streamType: "guild" };
+    }));
+    if (stopFn) d.cache.set("code:type:\"STREAM_STOP\"", stopFn);
+    else {
+      d.cache.set("code:type:\"STREAM_STOP\"", async () => {
+        calls.push(["stop"]);
+        state.stream = null;
+      });
+    }
+    return { calls, d, state };
+  }
+  it("starts a game stream and verifies it is live", async () => {
+    const { calls, d } = streamBridge({});
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Doom");
+    assert.deepEqual(calls[0].slice(0, 2), ["g1", "vc1"]);
+    assert.equal(calls[0][2].sourceId, "window:2:0");
+    assert.equal(calls[0][2].pid, 4242);
+  });
+  it("no-ops start when already streaming", async () => {
+    const { d } = streamBridge({ selfStream: { channelId: "vc1" } });
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.match(res.message, /Already streaming/);
+  });
+  it("requires voice, games, and matching sources", async () => {
+    assert.match((await streamBridge({ inVoice: false }).d.startGameStream()).message, /Join a voice channel/);
+    assert.match((await streamBridge({ games: [] }).d.startGameStream()).message, /No game detected/);
+    const nomatch = streamBridge({ sources: [{ id: "window:9:0", name: "Discord", sourcePid: 999 }] });
+    const res = await nomatch.d.startGameStream();
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Couldn't find a window for Doom/);
+  });
+  it("reports disabled game detection", async () => {
+    const { d } = streamBridge({ games: [] });
+    d.cache.set("runningGame", { getRunningGames: () => [], getVisibleGame: () => null, isDetectionEnabled: () => false });
+    assert.match((await d.startGameStream()).message, /Game detection is off/);
+  });
+  it("fails cleanly without capture", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => "vc1" });
+    d.cache.set("streaming", { getCurrentUserActiveStream: () => null });
+    d.cache.set("runningGame", { getRunningGames: () => [{ name: "Doom", pid: 1 }], getVisibleGame: () => null });
+    assert.match((await d.startGameStream()).message, /Couldn't reach screen capture/);
+  });
+  it("starts screen streams", async () => {
+    const { d } = streamBridge({ sources: [{ id: "window:1:0", name: "App" }, { id: "screen:0:0", name: "Screen 1" }] });
+    const res = await d.startScreenStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming your screen");
+    const noscreen = streamBridge({ sources: [{ id: "window:1:0", name: "App" }] });
+    assert.match((await noscreen.d.startScreenStream()).message, /Couldn't find your screen/);
+  });
+  it("stops the own stream and no-ops when idle", async () => {
+    const idle = streamBridge({});
+    assert.equal((await idle.d.stopOwnStream()).message, "Not streaming.");
+    const live = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
+    const res = await live.d.stopOwnStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Stream stopped.");
+  });
+  it("toggles between start and stop", async () => {
+    const idle = streamBridge({});
+    assert.equal((await idle.d.toggleGameStream()).message, "Streaming Doom");
+    const live = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
+    assert.equal((await live.d.toggleGameStream()).message, "Stream stopped.");
+  });
+  it("falls back to voice-state channel lookup", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => null });
+    d.cache.set("userStore", { getCurrentUser: () => ({ id: "u1" }) });
+    d.cache.set("voiceState", { getVoiceStateForUser: (id) => (id === "u1" ? { channelId: "vc9" } : null) });
+    assert.equal(d.getVoiceChannelId(), "vc9");
+  });
+});
+
+describe("stream tracking", () => {
+  it("tracks and clears the announced key", () => {
+    const subs = {};
+    const flux = {
+      subscribe: (type, fn) => { subs[type] = fn; },
+      unsubscribe: (type) => { delete subs[type]; }
+    };
+    const d = new DiscordBridge({});
+    d.cache.set("flux", flux);
+    d.subscribeStreamEvents();
+    subs.STREAM_CREATE("guild:g:c:u");
+    assert.equal(d.streamKey, "guild:g:c:u");
+    subs.STREAM_DELETE();
+    assert.equal(d.streamKey, null);
+    d.unsubscribeStreamEvents();
+    assert.deepEqual(Object.keys(subs), []);
+  });
+});
+
+describe("inspectNativeModules", () => {
+  it("records keys of present modules and caches", () => {
+    const prev = globalThis.DiscordNative;
+    let requires = 0;
+    globalThis.DiscordNative = {
+      nativeModules: {
+        requireModule: (name) => {
+          requires += 1;
+          if (name === "discord_voice") return { getStats: () => {}, setDevice: () => {} };
+          throw new Error("missing");
+        }
+      }
+    };
+    try {
+      const d = new DiscordBridge({});
+      assert.deepEqual(d.inspectNativeModules(), { discord_voice: ["getStats", "setDevice"] });
+      assert.equal(requires, 14);
+      assert.equal(d.inspectNativeModules(), d.inspectNativeModules());
+    } finally {
+      if (prev === undefined) delete globalThis.DiscordNative;
+      else globalThis.DiscordNative = prev;
+    }
+  });
+});
+
+describe("streaming probe", () => {
+  it("reports streaming state and native modules", () => {
+    const d = new DiscordBridge({});
+    const p = d.probe();
+    assert.equal(typeof p.streaming, "object");
+    assert.equal(p.streaming.ready, false);
+    assert.equal(p.streaming.games, null);
+    assert.equal(p.streaming.selfStream, false);
+    assert.deepEqual(p.nativeModules, {});
+    const text = d.diagnosticsText("HEADER");
+    assert.match(text, /streamFns:/);
+    assert.match(text, /nativeModules: none/);
+    assert.match(d.probeSummary(), /stm:MISS live:n/);
+  });
+});
