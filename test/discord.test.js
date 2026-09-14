@@ -87,4 +87,36 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(d.setSelfMute(true).message, "Already muted");
     assert.deepEqual(dispatched, []);
   });
+  it("probes module status and volumes", () => {
+    const { d } = stubbed();
+    const p = d.probe();
+    assert.equal(p.flux, true);
+    assert.equal(p.mediaEngine, true);
+    assert.ok(p.mediaMethods.includes("getOutputVolume"));
+    assert.ok(p.mediaMethods.includes("setOutputVolume"));
+    assert.equal(p.voiceActions, false);
+    assert.equal(p.outputVolume, 55);
+    assert.equal(p.inputVolume, 80);
+    assert.equal(p.selfMute, true);
+    assert.equal(p.selfDeaf, false);
+    assert.match(d.probeSummary(), /flux:ok media:ok/);
+    assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 55/);
+  });
+  it("probes empty without modules", () => {
+    const d = new DiscordBridge({});
+    const p = d.probe();
+    assert.equal(p.flux, false);
+    assert.equal(p.mediaEngine, false);
+    assert.deepEqual(p.mediaMethods, []);
+    assert.equal(p.outputVolume, null);
+    assert.match(d.probeSummary(), /flux:MISS/);
+  });
+  it("logs volume writes to the debug log", () => {
+    const { d } = stubbed();
+    const logged = [];
+    d.log = { debug: (t, m) => logged.push(["debug", m]), info: (t, m) => logged.push(["info", m]), warn: (t, m) => logged.push(["warn", m]) };
+    d.setOutputVolume(75);
+    assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 55 -> 75")));
+    assert.ok(logged.some(([l, m]) => l === "debug" && m.includes("AUDIO_SET_OUTPUT_VOLUME")));
+  });
 });

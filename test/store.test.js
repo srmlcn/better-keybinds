@@ -11,7 +11,7 @@ describe("fresh state", () => {
   it("starts with no binds", () => {
     const state = s.freshState();
     assert.deepEqual(state.binds, []);
-    assert.deepEqual(state.settings, { defaultGlobal: false, defaultToast: true });
+    assert.deepEqual(state.settings, { debugLogging: true, defaultGlobal: false, defaultToast: true });
   });
 });
 
