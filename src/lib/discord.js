@@ -159,7 +159,7 @@ class DiscordBridge {
     const flux = this.getFlux();
     if (!flux || typeof flux.dispatch !== "function") {
       this.warn(`dispatch ${type} failed: flux unavailable`);
-      return { ok: false, message: "Flux dispatcher unavailable (Discord update?)." };
+      return { ok: false, message: "Couldn't reach Discord's controls — Discord may have updated." };
     }
     try {
       flux.dispatch({ type, ...payload });
@@ -200,7 +200,7 @@ class DiscordBridge {
   // assuming the write landed.
   setOutputVolume(value) {
     const v = DiscordBridge.clampVolume(value);
-    if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
+    if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
     const before = this.getOutputVolume();
     const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
     let direct = false;
@@ -213,7 +213,7 @@ class DiscordBridge {
     } catch { /* Flux path above is primary */ }
     if (!res.ok && !direct) {
       this.warn("output volume: no write path available");
-      return { ok: false, message: "Output volume module unavailable (Discord update?)." };
+      return { ok: false, message: "Couldn't reach Discord's speaker controls — Discord may have updated." };
     }
     const out = this.verifyVolume("Output", before, v);
     this.info(`output volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
@@ -222,7 +222,7 @@ class DiscordBridge {
 
   setInputVolume(value) {
     const v = DiscordBridge.clampVolume(value);
-    if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
+    if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
     const before = this.getInputVolume();
     const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
     let direct = false;
@@ -235,7 +235,7 @@ class DiscordBridge {
     } catch { /* Flux path above is primary */ }
     if (!res.ok && !direct) {
       this.warn("input volume: no write path available");
-      return { ok: false, message: "Input volume module unavailable (Discord update?)." };
+      return { ok: false, message: "Couldn't reach Discord's microphone controls — Discord may have updated." };
     }
     const out = this.verifyVolume("Input", before, v);
     this.info(`input volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
@@ -243,13 +243,14 @@ class DiscordBridge {
   }
 
   verifyVolume(label, before, wanted) {
+    const friendly = label === "Input" ? "Microphone volume" : "Speaker volume";
     const after = label === "Input" ? this.getInputVolume() : this.getOutputVolume();
-    if (after === null) return { ok: true, message: `${label} volume -> ${wanted}% (unverified)` };
+    if (after === null) return { ok: true, message: `${friendly} → ${wanted}% (couldn't confirm)` };
     if (Math.abs(after - wanted) > 1) {
-      return { ok: false, message: `${label} volume stuck at ${Math.round(after)}% (wanted ${wanted}%)` };
+      return { ok: false, message: `${friendly} didn't change — still ${Math.round(after)}%` };
     }
     const from = before === null ? "?" : `${Math.round(before)}%`;
-    return { ok: true, message: `${label} volume ${from} -> ${wanted}%` };
+    return { ok: true, message: `${friendly} ${from} → ${wanted}%` };
   }
 
   readFlag(candidates) {
@@ -275,27 +276,39 @@ class DiscordBridge {
   }
 
   toggleSelfMute() {
+    const done = () => {
+      const state = this.isSelfMute();
+      if (state === true) return { ok: true, message: "Muted" };
+      if (state === false) return { ok: true, message: "Unmuted" };
+      return { ok: true, message: "Mute toggled" };
+    };
     try {
       const voice = this.getVoiceActions();
       if (voice && typeof voice.toggleSelfMute === "function") {
         voice.toggleSelfMute();
-        return { ok: true, message: "Toggled mute" };
+        return done();
       }
     } catch { /* Flux fallback below */ }
     const res = this.dispatch("AUDIO_TOGGLE_SELF_MUTE", { context: "default", syncRemote: true });
-    return res.ok ? { ok: true, message: "Toggled mute" } : res;
+    return res.ok ? done() : res;
   }
 
   toggleSelfDeaf() {
+    const done = () => {
+      const state = this.isSelfDeaf();
+      if (state === true) return { ok: true, message: "Deafened" };
+      if (state === false) return { ok: true, message: "Undeafened" };
+      return { ok: true, message: "Deafen toggled" };
+    };
     try {
       const voice = this.getVoiceActions();
       if (voice && typeof voice.toggleSelfDeaf === "function") {
         voice.toggleSelfDeaf();
-        return { ok: true, message: "Toggled deafen" };
+        return done();
       }
     } catch { /* Flux fallback below */ }
     const res = this.dispatch("AUDIO_TOGGLE_SELF_DEAF", { context: "default", syncRemote: true });
-    return res.ok ? { ok: true, message: "Toggled deafen" } : res;
+    return res.ok ? done() : res;
   }
 
   setSelfMute(muted) {
@@ -330,19 +343,19 @@ class DiscordBridge {
 
   disconnectVoice() {
     const res = this.dispatch("VOICE_CHANNEL_SELECT", { channelId: null });
-    if (res.ok) return { ok: true, message: "Disconnected from voice" };
+    if (res.ok) return { ok: true, message: "Left the voice channel" };
     try {
       const actions = this.getChannelActions();
       if (actions && typeof actions.selectVoiceChannel === "function") {
         actions.selectVoiceChannel(null);
-        return { ok: true, message: "Disconnected from voice" };
+        return { ok: true, message: "Left the voice channel" };
       }
     } catch { /* ignore */ }
-    return res.ok ? res : { ok: false, message: res.message || "Voice disconnect unavailable." };
+    return res.ok ? res : { ok: false, message: res.message || "Couldn't leave the voice channel." };
   }
 
   goToChannel(guildId, channelId) {
-    if (!guildId || !channelId) return { ok: false, message: "Guild ID and channel ID are required." };
+    if (!guildId || !channelId) return { ok: false, message: "This keybind needs a server and channel ID." };
     const res = this.dispatch("CHANNEL_SELECT", { channelId: String(channelId), guildId: String(guildId) });
     if (res.ok) return { ok: true, message: "Switched channel" };
     try {
@@ -360,7 +373,7 @@ class DiscordBridge {
     } catch (error) {
       return { ok: false, message: error?.message || String(error) };
     }
-    return { ok: false, message: res.message || "Channel switch unavailable." };
+    return { ok: false, message: "Couldn't switch channels." };
   }
 
   getCurrentTextChannelId() {
@@ -378,12 +391,12 @@ class DiscordBridge {
   }
 
   async sendMessage(channelId, content) {
-    if (!channelId) return { ok: false, message: "No channel selected." };
-    if (!content || !String(content).trim()) return { ok: false, message: "Message text is empty." };
-    if (String(content).length > 2000) return { ok: false, message: "Message exceeds 2000 characters." };
+    if (!channelId) return { ok: false, message: "Couldn't send — no channel is open." };
+    if (!content || !String(content).trim()) return { ok: false, message: "Couldn't send — the message is empty." };
+    if (String(content).length > 2000) return { ok: false, message: "Couldn't send — the message is over 2000 characters." };
     const actions = this.getMessageActions();
     if (!actions || typeof actions.sendMessage !== "function") {
-      return { ok: false, message: "Message module unavailable (Discord update?)." };
+      return { ok: false, message: "Couldn't reach Discord's messaging — Discord may have updated." };
     }
     try {
       const res = actions.sendMessage(String(channelId), { content: String(content) });

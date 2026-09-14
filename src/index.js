@@ -59,8 +59,8 @@ module.exports = class BetterKeybinds {
     const enabled = state.binds.filter((b) => b.enabled).length;
     this.discord.showToast(
       fresh || state.binds.length === 0
-        ? "BetterKeybinds: add your first keybind in settings."
-        : `BetterKeybinds: ${enabled}/${state.binds.length} binds active.`,
+        ? "Better Keybinds is ready — add your first keybind in settings."
+        : `Better Keybinds is on — ${enabled} of ${state.binds.length} keybinds active.`,
       "info"
     );
     // Discord lazy-loads modules; warm caches once the client idles.
@@ -99,11 +99,10 @@ module.exports = class BetterKeybinds {
     try {
       this.log[res.ok ? "info" : "warn"]("run", `${bind.type} via ${source}: ${res.message || (res.ok ? "OK" : "failed")}`);
     } catch { /* ignore */ }
-    if (!res.ok || bind.toastOnRun) {
-      this.discord?.showToast(
-        res.ok ? `${res.message || "OK"} (${source})` : (res.message || "Bind failed"),
-        res.ok ? "success" : "error"
-      );
+    // A toast action already showed its own message; don't echo it.
+    const silentSuccess = res.ok && bind.type === "util.toast";
+    if ((!res.ok || bind.toastOnRun) && !silentSuccess) {
+      this.discord?.showToast(res.message || (res.ok ? "Done" : "That keybind didn't work"), res.ok ? "success" : "error");
     }
     return res;
   }

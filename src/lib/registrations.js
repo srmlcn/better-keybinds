@@ -138,7 +138,7 @@ class BindEngine {
       return;
     }
     if (!supported) {
-      this.globalStatus.errors.push("DiscordNative global shortcuts unavailable; global binds work in-app only.");
+      this.globalStatus.errors.push("Global shortcuts aren't available — keybinds only work while Discord is focused.");
       this.notifyGlobalErrors();
       return;
     }
@@ -176,7 +176,7 @@ class BindEngine {
     this.lastGlobalErrorSig = sig;
     const first = this.globalStatus.errors[0];
     const extra = this.globalStatus.errors.length > 1 ? ` (+${this.globalStatus.errors.length - 1} more)` : "";
-    this.notify(`Global keybinds: ${first}${extra}`, "warning");
+    this.notify(`Global shortcuts: ${first}${extra}`, "warning");
   }
 }
 

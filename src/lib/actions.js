@@ -219,11 +219,11 @@ function sleep(ms) {
 
 async function runAction(type, params, ctx) {
   const def = getActionDef(type);
-  if (!def) return { message: `Unknown action: ${type}`, ok: false };
+  if (!def) return { message: `Sorry, this action isn't supported: ${type}`, ok: false };
   const { errors, values } = coerceParams(def, params || {});
   if (errors.length) return { message: errors[0], ok: false };
   const discord = ctx?.discord;
-  if (!discord && !type.startsWith("util.")) return { message: "Discord bridge unavailable.", ok: false };
+  if (!discord && !type.startsWith("util.")) return { message: "Couldn't reach Discord.", ok: false };
 
   try {
     switch (type) {
@@ -231,20 +231,20 @@ async function runAction(type, params, ctx) {
         return discord.setOutputVolume(values.volume);
       case "output.adjust": {
         const current = discord.getOutputVolume();
-        if (current === null) return { message: "Could not read current output volume.", ok: false };
+        if (current === null) return { message: "Couldn't read the current speaker volume.", ok: false };
         return discord.setOutputVolume(current + values.delta);
       }
       case "output.toggle": {
         const current = discord.getOutputVolume();
         const target = resolveToggle(current, values.a, values.b);
-        if (target === null) return { message: "Invalid toggle levels.", ok: false };
+        if (target === null) return { message: "This keybind's volume levels are invalid.", ok: false };
         return discord.setOutputVolume(target);
       }
       case "input.set":
         return discord.setInputVolume(values.volume);
       case "input.adjust": {
         const current = discord.getInputVolume();
-        if (current === null) return { message: "Could not read current input volume.", ok: false };
+        if (current === null) return { message: "Couldn't read the current microphone volume.", ok: false };
         return discord.setInputVolume(current + values.delta);
       }
       case "self.toggleMute":
@@ -265,7 +265,7 @@ async function runAction(type, params, ctx) {
           : discord.getCurrentTextChannelId();
         if (!channelId) {
           return {
-            message: values.channelScope === "saved" ? "Channel ID is required." : "No channel selected.",
+            message: values.channelScope === "saved" ? "This keybind needs a channel ID." : "Couldn't send — no channel is open.",
             ok: false
           };
         }
@@ -276,12 +276,12 @@ async function runAction(type, params, ctx) {
         return { message: "Toast shown", ok: true };
       case "util.openUrl": {
         const opener = globalThis.open;
-        if (typeof opener !== "function") return { message: "Cannot open URLs here.", ok: false };
+        if (typeof opener !== "function") return { message: "Couldn't open that link here.", ok: false };
         opener(values.url, "_blank", "noopener");
-        return { message: "URL opened", ok: true };
+        return { message: "Link opened", ok: true };
       }
       default:
-        return { message: `Unknown action: ${type}`, ok: false };
+        return { message: `Sorry, this action isn't supported: ${type}`, ok: false };
     }
   } catch (error) {
     return { message: `${def.label} failed: ${error?.message || error}`, ok: false };
