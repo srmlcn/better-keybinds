@@ -77,12 +77,12 @@ function stubbed({ stuck = false, readable = true, voiceThrows = false } = {}) {
 describe("DiscordBridge with stubbed modules", () => {
   it("writes actions-first and verifies by read-back", () => {
     const { calls, d, dispatched } = stubbed();
-    assert.equal(d.getOutputVolume(), 82);
+    assert.equal(d.getOutputVolume(), 80);
     assert.equal(d.getOutputVolumeRaw(), 55);
     const res = d.setOutputVolume(75);
     const amp75 = sliderToAmplitude(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /82% → 75%/);
+    assert.match(res.message, /80% → 75%/);
     assert.equal(calls.length, 2);
     assert.equal(calls[0][0], "actions-out");
     assert.ok(Math.abs(calls[0][1] - amp75) < 1e-9);
@@ -95,7 +95,7 @@ describe("DiscordBridge with stubbed modules", () => {
     const { d } = stubbed({ stuck: true });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, false);
-    assert.match(res.message, /didn't change — still 82%/);
+    assert.match(res.message, /didn't change — still 80%/);
   });
   it("tracks the set value when volume is unreadable", () => {
     const { d } = stubbed({ readable: false });
@@ -124,16 +124,16 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(p.voiceActions, true);
     assert.equal(p.audioPath.setters.setOutputVolume, true);
     assert.equal(p.audioPath.hasOutputVolumeHandler, null);
-    assert.equal(p.outputVolume, 82);
+    assert.equal(p.outputVolume, 80);
     assert.equal(p.outputAmplitude, 55);
-    assert.equal(p.inputVolume, 93);
+    assert.equal(p.inputVolume, 91);
     assert.equal(p.inputAmplitude, 80);
     assert.equal(p.selfMute, true);
     assert.equal(p.selfDeaf, false);
     assert.equal(p.outputTracked, null);
     assert.equal(p.inputTracked, null);
     assert.match(d.probeSummary(), /flux:ok media:ok/);
-    assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 82 \(amplitude 55\)/);
+    assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 80 \(amplitude 55\)/);
   });
   it("probes empty without modules", () => {
     const d = new DiscordBridge({});
@@ -149,7 +149,7 @@ describe("DiscordBridge with stubbed modules", () => {
     const logged = [];
     d.log = { debug: (t, m) => logged.push(["debug", m]), info: (t, m) => logged.push(["info", m]), warn: (t, m) => logged.push(["warn", m]) };
     d.setOutputVolume(75);
-    assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 82 -> 75")));
+    assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 80 -> 75")));
     assert.ok(logged.some(([l, m]) => l === "debug" && m.includes("AUDIO_SET_OUTPUT_VOLUME")));
   });
   it("fingerprints resolved modules", () => {
@@ -178,7 +178,7 @@ describe("DiscordBridge with stubbed modules", () => {
     const { d } = stubbed({ voiceThrows: true });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /82% → 75%/);
+    assert.match(res.message, /80% → 75%/);
   });
   it("fingerprints prototype methods", () => {
     const { d } = stubbed();

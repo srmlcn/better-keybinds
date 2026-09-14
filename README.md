@@ -42,7 +42,7 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 
 ## Volume and the Discord settings slider
 
-Binds use Discord's **slider percent** (what Voice & Video shows), not the raw store number. The speaker/mic sliders are cubic: the engine stores linear amplitude, and the label is the cube root of that. The 50 dB curve Discord uses for per-user volume does not apply here. The plugin converts both ways so "set 40" lands on 40% on the slider.
+Binds use Discord's **slider percent** (what Voice & Video shows), not the raw store number. The speaker/mic sliders are cubic in amplitude; Discord's label sits 2 points below a pure cube-root, so the plugin biases the conversion by +2. The 50 dB curve Discord uses for per-user volume does not apply here.
 
 Every volume write is verified by reading the value back from Discord's own audio store, and the toast reports ground truth. Writes use Discord's own voice-action setters first, then Flux, then the store directly:
 

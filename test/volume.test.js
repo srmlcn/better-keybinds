@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { amplitudeToSlider, roundVolume, sliderToAmplitude } = require("../src/lib/volume");
+const { SLIDER_BIAS, amplitudeToSlider, roundVolume, sliderToAmplitude } = require("../src/lib/volume");
 
 describe("Discord device volume curve", () => {
   it("maps 0 and 100 to themselves", () => {
@@ -11,14 +11,15 @@ describe("Discord device volume curve", () => {
     assert.equal(amplitudeToSlider(0), 0);
     assert.equal(amplitudeToSlider(100), 100);
   });
-  it("cubes slider percent to amplitude", () => {
-    assert.equal(sliderToAmplitude(50), 12.5);
-    assert.ok(Math.abs(sliderToAmplitude(40) - 6.4) < 1e-9);
+  it("cubes a +2-biased slider percent to amplitude", () => {
+    assert.equal(SLIDER_BIAS, 2);
+    assert.ok(Math.abs(sliderToAmplitude(50) - 100 * (0.52 ** 3)) < 1e-9);
+    assert.ok(Math.abs(sliderToAmplitude(40) - 100 * (0.42 ** 3)) < 1e-9);
   });
-  it("matches measured slider labels for raw amplitudes", () => {
-    assert.equal(roundVolume(amplitudeToSlider(40)), 74);
-    assert.equal(roundVolume(amplitudeToSlider(60)), 84);
-    assert.equal(roundVolume(amplitudeToSlider(3.1622776601683795)), 32);
+  it("reads Discord's labeled percent from raw amplitude", () => {
+    assert.equal(roundVolume(amplitudeToSlider(40)), 72);
+    assert.equal(roundVolume(amplitudeToSlider(60)), 82);
+    assert.equal(roundVolume(amplitudeToSlider(sliderToAmplitude(50))), 50);
   });
   it("round-trips slider percents", () => {
     for (const p of [1, 10, 25, 40, 50, 60, 75, 90, 100]) {

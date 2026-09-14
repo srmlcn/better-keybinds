@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.6.5
+ * @version 2.6.6
  * @runAt idle
  */
 "use strict";
@@ -316,17 +316,19 @@ var require_volume = __commonJS({
   "src/lib/volume.js"(exports2, module2) {
     "use strict";
     var VOLUME_MAX = 100;
+    var SLIDER_BIAS = 2;
     function sliderToAmplitude(percent, max = VOLUME_MAX) {
       const p = Number(percent);
       if (!Number.isFinite(p) || p <= 0 || max <= 0) return 0;
-      const n = Math.max(0, p / max);
-      return max * n ** 3;
+      const biased = p >= max ? max : Math.min(max, p + SLIDER_BIAS);
+      return max * (biased / max) ** 3;
     }
     function amplitudeToSlider(amplitude, max = VOLUME_MAX) {
       const a = Number(amplitude);
       if (!Number.isFinite(a) || a <= 0 || max <= 0) return 0;
-      const n = Math.max(0, a / max);
-      return max * n ** (1 / 3);
+      const p = max * Math.max(0, a / max) ** (1 / 3);
+      if (p >= max) return max;
+      return Math.max(0, p - SLIDER_BIAS);
     }
     function roundVolume(value) {
       const n = Number(value);
@@ -334,6 +336,7 @@ var require_volume = __commonJS({
       return Math.round(n);
     }
     module2.exports = {
+      SLIDER_BIAS,
       VOLUME_MAX,
       amplitudeToSlider,
       roundVolume,
