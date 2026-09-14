@@ -66,6 +66,19 @@ Layout: `src/index.js` (plugin entry) · `src/lib/discord.js` (webpack bridge) �
 
 To change author/update URL, edit `src/meta.js` and rebuild.
 
+## Debugging
+
+Yes — three layers, easiest first:
+
+1. **In-plugin diagnostics** (this plugin's Settings → Diagnostics): module status dots (Flux, MediaEngine, Voice, …), live output/input readings, a scrolling debug log, and **Copy diagnostics** for sharing. Every bind run and volume write is logged with its verified result.
+2. **Discord console**: Settings → BetterDiscord → Developer → enable **DevTools**, then `Ctrl+Shift+I` (`Cmd+Opt+I` on Mac). `[BetterKeybinds]` lines mirror the in-plugin log (disable with "Debug logging to console"). Useful probes:
+   - `BetterKeybinds.discord.getOutputVolume()` — current speaker value
+   - `BetterKeybinds.discord.probeSummary()` — one-line module status
+   - `BetterKeybinds.runBindById("b_…", "console")` — run a bind by ID
+3. **Debug log file**: Settings → BetterDiscord → Developer → **Debug Logs** writes all console output to `debug.log` in the BetterDiscord folder (`%appdata%/BetterDiscord` on Windows, `~/.config/BetterDiscord` on Linux). Turn off when done — it grows fast.
+
+If volume "doesn't change", check in order: toast message (success/stuck/unavailable?) → Diagnostics dots (MediaEngine found? methods count?) → debug log (which write path was used?) → console for red errors.
+
 ## Troubleshooting
 
 - **"Stuck at X%" toast**: Discord ignored the write. Try reopening Discord; if it persists after a Discord update, the audio internals likely moved and the bridge needs an update.
