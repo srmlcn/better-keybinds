@@ -27,7 +27,7 @@ describe("DiscordBridge without BdApi modules", () => {
   });
 });
 
-function stubbed({ stuck = false, readable = true } = {}) {
+function stubbed({ stuck = false, readable = true, voiceThrows = false } = {}) {
   const dispatched = [];
   const calls = [];
   let vol = 55;
@@ -42,6 +42,17 @@ function stubbed({ stuck = false, readable = true } = {}) {
     }
   };
   if (readable) store.getOutputVolume = () => vol;
+  const voice = {
+    setInputVolume: (v) => calls.push(["actions-in", v]),
+    setOutputVolume: (v) => {
+      calls.push(["actions-out", v]);
+      if (voiceThrows) throw new Error("voice down");
+    },
+    setSelfDeaf: () => {},
+    setSelfMute: () => {},
+    toggleSelfDeaf: () => {},
+    toggleSelfMute: () => {}
+  };
   const BdApi = {
     Webpack: {
       Filters: {
@@ -50,7 +61,8 @@ function stubbed({ stuck = false, readable = true } = {}) {
       getModule: (filter) => {
         const candidates = [
           { dispatch: (e) => dispatched.push(e), subscribe: () => {}, unsubscribe: () => {} },
-          store
+          store,
+          voice
         ];
         return candidates.find((m) => { try { return filter(m); } catch { return false; } }) || null;
       }
@@ -61,13 +73,13 @@ function stubbed({ stuck = false, readable = true } = {}) {
 }
 
 describe("DiscordBridge with stubbed modules", () => {
-  it("writes flux-first and verifies by read-back", () => {
+  it("writes actions-first and verifies by read-back", () => {
     const { calls, d, dispatched } = stubbed();
     assert.equal(d.getOutputVolume(), 55);
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
     assert.match(res.message, /55% → 75%/);
-    assert.deepEqual(calls, [["out", 75]]);
+    assert.deepEqual(calls, [["actions-out", 75], ["out", 75]]);
     assert.deepEqual(dispatched, [{ type: "AUDIO_SET_OUTPUT_VOLUME", volume: 75 }]);
   });
   it("reports stuck volume when read-back disagrees", () => {
@@ -99,7 +111,9 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(p.mediaEngine, true);
     assert.ok(p.mediaMethods.includes("getOutputVolume"));
     assert.ok(p.mediaMethods.includes("setOutputVolume"));
-    assert.equal(p.voiceActions, false);
+    assert.equal(p.voiceActions, true);
+    assert.equal(p.audioPath.setters.setOutputVolume, true);
+    assert.equal(p.audioPath.hasOutputVolumeHandler, null);
     assert.equal(p.outputVolume, 55);
     assert.equal(p.inputVolume, 80);
     assert.equal(p.selfMute, true);
@@ -145,5 +159,78 @@ describe("DiscordBridge with stubbed modules", () => {
     const p = d.probe();
     assert.equal(p.audioActions, false);
     assert.deepEqual(p.audioActionKeys, []);
+  });
+  it("falls through when the voice setter throws", () => {
+    const { d } = stubbed({ voiceThrows: true });
+    const res = d.setOutputVolume(75);
+    assert.equal(res.ok, true);
+    assert.match(res.message, /55% → 75%/);
+  });
+  it("fingerprints prototype methods", () => {
+    const { d } = stubbed();
+    class Store {
+      constructor() {
+        this.ownProp = 1;
+      }
+      protoGetter() {
+        return 1;
+      }
+    }
+    const fp = d.fingerprint(new Store());
+    assert.match(fp, /ownProp/);
+    assert.match(fp, /protoGetter/);
+  });
+});
+
+describe("inspectAudioPath", () => {
+  function bridgeWith(flux, voice) {
+    return new DiscordBridge({
+      Webpack: {
+        Filters: {
+          byProps: (...props) => (m) => m && props.every((p) => m[p] !== undefined)
+        },
+        getModule: (filter) => [flux, voice].find((m) => { try { return filter(m); } catch { return false; } }) || null
+      }
+    });
+  }
+  const voice = {
+    setInputVolume: (v) => v,
+    setOutputVolume: (v) => v * 2,
+    toggleSelfDeaf: () => {},
+    toggleSelfMute: () => {}
+  };
+  it("detects handlers and setter sources", () => {
+    const flux = {
+      _actionHandlers: { AUDIO_SET_OUTPUT_VOLUME: new Set([() => {}]), SOMETHING_ELSE: new Set() },
+      dispatch: () => {},
+      subscribe: () => {},
+      unsubscribe: () => {}
+    };
+    const ap = bridgeWith(flux, voice).inspectAudioPath();
+    assert.equal(ap.setters.setOutputVolume, true);
+    assert.equal(ap.setters.setInputVolume, true);
+    assert.equal(ap.hasOutputVolumeHandler, true);
+    assert.equal(ap.fluxHandlerCount, 1);
+    assert.equal(ap.fluxTotalTypes, 2);
+    assert.deepEqual(ap.fluxAudioTypes, ["AUDIO_SET_OUTPUT_VOLUME"]);
+    assert.match(ap.sources.setOutputVolume, /v \* 2/);
+    assert.ok(ap.sources.setOutputVolume.length <= 400);
+  });
+  it("reports missing handlers explicitly", () => {
+    const flux = {
+      _actionHandlers: { SOMETHING_ELSE: new Set() },
+      dispatch: () => {},
+      subscribe: () => {},
+      unsubscribe: () => {}
+    };
+    const ap = bridgeWith(flux, voice).inspectAudioPath();
+    assert.equal(ap.hasOutputVolumeHandler, false);
+  });
+  it("reports unknown when flux hides handlers", () => {
+    const flux = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
+    const ap = bridgeWith(flux, null).inspectAudioPath();
+    assert.equal(ap.hasOutputVolumeHandler, null);
+    assert.equal(ap.setters.setOutputVolume, false);
+    assert.deepEqual(ap.sources, {});
   });
 });
