@@ -136,6 +136,7 @@ class DiscordBridge {
   }
 
   // One-line shape summary so a wrong-module match is visible in the log.
+  // Includes prototype methods: class-based stores keep getters there.
   fingerprint(mod, maxKeys = 40) {
     if (!mod || (typeof mod !== "object" && typeof mod !== "function")) return String(mod);
     let keys = [];
@@ -144,9 +145,17 @@ class DiscordBridge {
     } catch {
       return "?";
     }
+    let proto = [];
+    try {
+      const parent = Object.getPrototypeOf(mod);
+      if (parent && parent !== Object.prototype) {
+        proto = Object.getOwnPropertyNames(parent).filter((k) => k !== "constructor").sort();
+      }
+    } catch { /* ignore */ }
     const ctor = mod?.constructor?.name && mod.constructor.name !== "Object" ? ` ctor:${mod.constructor.name}` : "";
     const shown = keys.slice(0, maxKeys).join(",");
-    return `${keys.length} keys${ctor} [${shown}]${keys.length > maxKeys ? "…" : ""}`;
+    const protoShown = proto.length ? ` proto[${proto.slice(0, 20).join(",")}]${proto.length > 20 ? "…" : ""}` : "";
+    return `${keys.length} keys${ctor} [${shown}]${keys.length > maxKeys ? "…" : ""}${protoShown}`;
   }
 
   getFlux() {
@@ -272,6 +281,16 @@ class DiscordBridge {
     const v = DiscordBridge.clampVolume(value);
     if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
     const before = this.getOutputVolume();
+    let viaActions = false;
+    try {
+      const voice = this.getVoiceActions();
+      if (voice && typeof voice.setOutputVolume === "function") {
+        voice.setOutputVolume(v);
+        viaActions = true;
+      }
+    } catch (error) {
+      this.debug(`voice setOutputVolume threw: ${error?.message || error}`);
+    }
     const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
     let direct = false;
     try {
@@ -280,13 +299,13 @@ class DiscordBridge {
         store.setOutputVolume(v);
         direct = true;
       }
-    } catch { /* Flux path above is primary */ }
-    if (!res.ok && !direct) {
+    } catch { /* actions/flux paths above are primary */ }
+    if (!viaActions && !res.ok && !direct) {
       this.warn("output volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's speaker controls — Discord may have updated." };
     }
     const out = this.verifyVolume("Output", before, v);
-    this.info(`output volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    this.info(`output volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
     return out;
   }
 
@@ -294,6 +313,16 @@ class DiscordBridge {
     const v = DiscordBridge.clampVolume(value);
     if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
     const before = this.getInputVolume();
+    let viaActions = false;
+    try {
+      const voice = this.getVoiceActions();
+      if (voice && typeof voice.setInputVolume === "function") {
+        voice.setInputVolume(v);
+        viaActions = true;
+      }
+    } catch (error) {
+      this.debug(`voice setInputVolume threw: ${error?.message || error}`);
+    }
     const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
     let direct = false;
     try {
@@ -302,13 +331,13 @@ class DiscordBridge {
         store.setInputVolume(v);
         direct = true;
       }
-    } catch { /* Flux path above is primary */ }
-    if (!res.ok && !direct) {
+    } catch { /* actions/flux paths above are primary */ }
+    if (!viaActions && !res.ok && !direct) {
       this.warn("input volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's microphone controls — Discord may have updated." };
     }
     const out = this.verifyVolume("Input", before, v);
-    this.info(`input volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    this.info(`input volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
     return out;
   }
 
@@ -531,12 +560,72 @@ class DiscordBridge {
     return found;
   }
 
+  // Read-only inspection of the volume write path: which setters exist,
+  // whether Flux has a handler for the volume event, and what the setter
+  // functions look like. Decisive for "dispatch goes nowhere" diagnosis.
+  inspectAudioPath() {
+    const out = {
+      fluxAudioTypes: [],
+      fluxHandlerCount: null,
+      fluxTotalTypes: null,
+      hasOutputVolumeHandler: null,
+      setters: { setInputVolume: false, setOutputVolume: false },
+      sources: {}
+    };
+    try {
+      const voice = this.getVoiceActions();
+      out.setters.setOutputVolume = typeof voice?.setOutputVolume === "function";
+      out.setters.setInputVolume = typeof voice?.setInputVolume === "function";
+      for (const key of ["setOutputVolume", "setInputVolume", "setSelfMute", "toggleSelfMute"]) {
+        try {
+          const fn = voice?.[key];
+          if (typeof fn === "function") out.sources[key] = String(fn.toString()).slice(0, 400);
+        } catch { /* ignore per-key */ }
+      }
+    } catch { /* ignore */ }
+    try {
+      const flux = this.getFlux();
+      const handlers = flux?._actionHandlers;
+      const types = [];
+      if (handlers instanceof Map) {
+        for (const key of handlers.keys()) types.push(key);
+      } else if (handlers && typeof handlers === "object") {
+        types.push(...Object.keys(handlers));
+      }
+      if (types.length || handlers) {
+        out.fluxTotalTypes = types.length;
+        out.fluxAudioTypes = types
+          .filter((t) => /AUDIO|VOLUME|VOICE|MEDIA|SPEAK|MUTE|DEAF/i.test(String(t)))
+          .map(String)
+          .sort()
+          .slice(0, 30);
+        if (types.includes("AUDIO_SET_OUTPUT_VOLUME")) {
+          out.hasOutputVolumeHandler = true;
+          try {
+            const entry = handlers instanceof Map
+              ? handlers.get("AUDIO_SET_OUTPUT_VOLUME")
+              : handlers["AUDIO_SET_OUTPUT_VOLUME"];
+            out.fluxHandlerCount = typeof entry?.size === "number"
+              ? entry.size
+              : Array.isArray(entry) ? entry.length : 1;
+          } catch {
+            out.fluxHandlerCount = null;
+          }
+        } else if (types.length) {
+          out.hasOutputVolumeHandler = false;
+        }
+      }
+    } catch { /* ignore */ }
+    return out;
+  }
+
   // Snapshot of every Discord dependency for the diagnostics panel.
   probe() {
     const media = this.getMediaEngineStore();
     return {
       audioActions: Boolean(this.getAudioActions()),
       audioActionKeys: this.audioActionKeys(),
+      audioPath: this.inspectAudioPath(),
       channelActions: Boolean(this.getChannelActions()),
       channelRouter: Boolean(this.getChannelRouter()),
       discordUtils: this.hasGlobalSupport(),
@@ -570,7 +659,12 @@ class DiscordBridge {
       ["native", p.discordUtils],
       ["keymap", p.keycodeMap]
     ].map(([k, v]) => `${k}:${v ? "ok" : "MISS"}`).join(" ");
-    return `${mods} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
+    const ap = p.audioPath || {};
+    const vset = ap.setters?.setOutputVolume ? "ok" : "MISS";
+    const oh = ap.hasOutputVolumeHandler === true
+      ? `yes${typeof ap.fluxHandlerCount === "number" ? `(${ap.fluxHandlerCount})` : ""}`
+      : ap.hasOutputVolumeHandler === false ? "NO" : "?";
+    return `${mods} vset:${vset} ovolh:${oh} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
   }
 
   diagnosticsText(header = "") {
@@ -592,6 +686,11 @@ class DiscordBridge {
       `selectedChannel: ${yn(p.selectedChannel)}`,
       `discordUtils(global): ${yn(p.discordUtils)}`,
       `keycodeMap: ${yn(p.keycodeMap)}`,
+      `voiceSetter(output): ${yn(p.audioPath?.setters?.setOutputVolume)}`,
+      `voiceSetter(input): ${yn(p.audioPath?.setters?.setInputVolume)}`,
+      `outputVolumeHandler: ${p.audioPath?.hasOutputVolumeHandler === true ? `yes (${p.audioPath.fluxHandlerCount ?? "?"} handlers)` : p.audioPath?.hasOutputVolumeHandler === false ? "NO" : "unknown"}`,
+      `fluxAudioTypes(${p.audioPath?.fluxTotalTypes ?? "?"} total): ${(p.audioPath?.fluxAudioTypes || []).join(", ") || "none"}`,
+      `setterSource(setOutputVolume): ${p.audioPath?.sources?.setOutputVolume || "n/a"}`,
       `outputVolume: ${val(p.outputVolume)}`,
       `inputVolume: ${val(p.inputVolume)}`,
       `selfMute: ${val(p.selfMute)}`,

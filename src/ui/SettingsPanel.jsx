@@ -570,6 +570,7 @@ function SettingsPanel(props) {
           <span><span style={s.statusDot(status.flux)} />Flux</span>
           <span><span style={s.statusDot(status.mediaEngine)} />MediaEngine ({status.mediaMethods.length}/7)</span>
           <span><span style={s.statusDot(status.audioActions)} />AudioActions</span>
+          <span><span style={s.statusDot(Boolean(status.audioPath?.setters?.setOutputVolume))} />VSet</span>
           <span><span style={s.statusDot(status.voiceActions)} />Voice</span>
           <span><span style={s.statusDot(status.channelActions)} />Channel</span>
           <span><span style={s.statusDot(status.messageActions)} />Message</span>
