@@ -124,4 +124,26 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 55 -> 75")));
     assert.ok(logged.some(([l, m]) => l === "debug" && m.includes("AUDIO_SET_OUTPUT_VOLUME")));
   });
+  it("fingerprints resolved modules", () => {
+    const { d } = stubbed();
+    const logged = [];
+    d.log = { debug: (t, m) => logged.push(m), info: () => {}, warn: () => {} };
+    d.getFlux();
+    assert.ok(logged.some((m) => m.includes("webpack resolved flux") && m.includes("keys")));
+  });
+  it("logs webpack exceptions instead of swallowing them", () => {
+    const logged = [];
+    const d = new DiscordBridge(
+      { Webpack: { getModule: () => { throw new Error("kaput"); } } },
+      { debug: () => {}, info: () => {}, warn: (t, m) => logged.push(m) }
+    );
+    assert.equal(d.findModule(() => true), null);
+    assert.ok(logged.some((m) => m.includes("threw: kaput")));
+  });
+  it("probes audio actions as missing in stub", () => {
+    const { d } = stubbed();
+    const p = d.probe();
+    assert.equal(p.audioActions, false);
+    assert.deepEqual(p.audioActionKeys, []);
+  });
 });
