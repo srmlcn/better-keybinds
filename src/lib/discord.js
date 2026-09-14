@@ -6,14 +6,33 @@ const { extractKeycodeMap } = require("./keybinds");
 // Every getter returns null (never throws) so Discord client updates
 // degrade to per-action errors instead of breaking the whole plugin.
 class DiscordBridge {
-  constructor(BdApi) {
+  constructor(BdApi, log = null) {
     this.BdApi = BdApi;
+    this.log = log || null;
     this.cache = new Map();
     this.lastAttempt = new Map();
     this.retryTtlMs = 5000;
     this.utilsTried = false;
     this.utilsCache = null;
     this.keymapCache = new Map();
+  }
+
+  debug(message) {
+    try {
+      this.log?.debug("discord", message);
+    } catch { /* logging never breaks the bridge */ }
+  }
+
+  info(message) {
+    try {
+      this.log?.info("discord", message);
+    } catch { /* logging never breaks the bridge */ }
+  }
+
+  warn(message) {
+    try {
+      this.log?.warn("discord", message);
+    } catch { /* logging never breaks the bridge */ }
   }
 
   refresh() {
@@ -67,7 +86,12 @@ class DiscordBridge {
     } catch {
       value = null;
     }
-    if (value) this.cache.set(key, value);
+    if (value) {
+      this.cache.set(key, value);
+      this.debug(`webpack resolved ${key}`);
+    } else {
+      this.debug(`webpack miss ${key} (will retry)`);
+    }
     return value;
   }
 
@@ -134,12 +158,15 @@ class DiscordBridge {
   dispatch(type, payload = {}) {
     const flux = this.getFlux();
     if (!flux || typeof flux.dispatch !== "function") {
+      this.warn(`dispatch ${type} failed: flux unavailable`);
       return { ok: false, message: "Flux dispatcher unavailable (Discord update?)." };
     }
     try {
       flux.dispatch({ type, ...payload });
+      this.debug(`dispatch ${type} ${JSON.stringify(payload)}`);
       return { ok: true };
     } catch (error) {
+      this.warn(`dispatch ${type} threw: ${error?.message || error}`);
       return { ok: false, message: error?.message || String(error) };
     }
   }
@@ -185,9 +212,12 @@ class DiscordBridge {
       }
     } catch { /* Flux path above is primary */ }
     if (!res.ok && !direct) {
+      this.warn("output volume: no write path available");
       return { ok: false, message: "Output volume module unavailable (Discord update?)." };
     }
-    return this.verifyVolume("Output", before, v);
+    const out = this.verifyVolume("Output", before, v);
+    this.info(`output volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    return out;
   }
 
   setInputVolume(value) {
@@ -204,9 +234,12 @@ class DiscordBridge {
       }
     } catch { /* Flux path above is primary */ }
     if (!res.ok && !direct) {
+      this.warn("input volume: no write path available");
       return { ok: false, message: "Input volume module unavailable (Discord update?)." };
     }
-    return this.verifyVolume("Input", before, v);
+    const out = this.verifyVolume("Input", before, v);
+    this.info(`input volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    return out;
   }
 
   verifyVolume(label, before, wanted) {
@@ -385,6 +418,7 @@ class DiscordBridge {
     } catch {
       this.utilsCache = null;
     }
+    this.debug(`discord_utils ${this.utilsCache ? "found" : "missing"}`);
     return this.utilsCache;
   }
 
@@ -410,7 +444,73 @@ class DiscordBridge {
       if (found) break;
     }
     this.keymapCache.set(platform, found);
+    this.debug(`keycode map (${platform}): ${found ? "found" : "missing"}`);
     return found;
+  }
+
+  // Snapshot of every Discord dependency for the diagnostics panel.
+  probe() {
+    const media = this.getMediaEngineStore();
+    return {
+      channelActions: Boolean(this.getChannelActions()),
+      channelRouter: Boolean(this.getChannelRouter()),
+      discordUtils: this.hasGlobalSupport(),
+      flux: Boolean(this.getFlux()),
+      inputVolume: this.getInputVolume(),
+      keycodeMap: Boolean(this.getKeycodeMap()),
+      mediaEngine: Boolean(media),
+      mediaMethods: media
+        ? ["getOutputVolume", "setOutputVolume", "getInputVolume", "setInputVolume", "getMediaEngine", "isSelfMute", "isSelfDeaf"]
+          .filter((k) => typeof media[k] === "function")
+        : [],
+      messageActions: Boolean(this.getMessageActions()),
+      outputVolume: this.getOutputVolume(),
+      platform: this.getPlatform(),
+      selectedChannel: Boolean(this.getSelectedChannelStore()),
+      selfDeaf: this.isSelfDeaf(),
+      selfMute: this.isSelfMute(),
+      voiceActions: Boolean(this.getVoiceActions())
+    };
+  }
+
+  probeSummary() {
+    const p = this.probe();
+    const mods = [
+      ["flux", p.flux],
+      ["media", p.mediaEngine],
+      ["voice", p.voiceActions],
+      ["channel", p.channelActions],
+      ["message", p.messageActions],
+      ["selected", p.selectedChannel],
+      ["native", p.discordUtils],
+      ["keymap", p.keycodeMap]
+    ].map(([k, v]) => `${k}:${v ? "ok" : "MISS"}`).join(" ");
+    return `${mods} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
+  }
+
+  diagnosticsText(header = "") {
+    const p = this.probe();
+    const yn = (v) => (v ? "found" : "MISSING");
+    const val = (v) => (v === null || v === undefined ? "unreadable" : String(v));
+    return [
+      header,
+      `time: ${new Date().toISOString()}`,
+      `bdApi: ${this.BdApi?.version ?? "unknown"}`,
+      `platform: ${p.platform}`,
+      `flux: ${yn(p.flux)}`,
+      `mediaEngine: ${yn(p.mediaEngine)} (methods: ${p.mediaMethods.join(", ") || "none"})`,
+      `voiceActions: ${yn(p.voiceActions)}`,
+      `channelActions: ${yn(p.channelActions)}`,
+      `channelRouter: ${yn(p.channelRouter)}`,
+      `messageActions: ${yn(p.messageActions)}`,
+      `selectedChannel: ${yn(p.selectedChannel)}`,
+      `discordUtils(global): ${yn(p.discordUtils)}`,
+      `keycodeMap: ${yn(p.keycodeMap)}`,
+      `outputVolume: ${val(p.outputVolume)}`,
+      `inputVolume: ${val(p.inputVolume)}`,
+      `selfMute: ${val(p.selfMute)}`,
+      `selfDeaf: ${val(p.selfDeaf)}`
+    ].filter(Boolean).join("\n");
   }
 
   showToast(text, type = "info") {

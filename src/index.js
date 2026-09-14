@@ -3,6 +3,7 @@
 const { DiscordBridge } = require("./lib/discord");
 const { BindEngine } = require("./lib/registrations");
 const { actionTypes, runBind } = require("./lib/actions");
+const { DebugLog } = require("./lib/logger");
 const { loadState, saveState } = require("./lib/store");
 const SettingsPanel = require("./ui/SettingsPanel");
 
@@ -12,15 +13,26 @@ module.exports = class BetterKeybinds {
     this.state = null;
     this.discord = null;
     this.engine = null;
+    this.log = new DebugLog({ limit: 300 });
   }
 
-  log(...args) {
+  mirrorToConsole(entry) {
+    if (entry.level === "debug" && !this.state?.settings?.debugLogging) return;
+    const text = `[BetterKeybinds] ${entry.tag}: ${entry.message}`;
     try {
-      if (globalThis.BdApi?.Logger?.info) globalThis.BdApi.Logger.info("BetterKeybinds", ...args);
-      else console.log("[BetterKeybinds]", ...args);
+      const Logger = globalThis.BdApi?.Logger;
+      const fn = Logger && typeof Logger[entry.level] === "function" ? Logger[entry.level] : null;
+      if (fn) fn.call(Logger, text);
+      else console.log(text);
     } catch {
-      console.log("[BetterKeybinds]", ...args);
+      console.log(text);
     }
+  }
+
+  logProbeSummary(context) {
+    try {
+      this.log.info("probe", `${context}: ${this.discord.probeSummary()}`);
+    } catch { /* probe must not break startup */ }
   }
 
   start() {
@@ -29,7 +41,8 @@ module.exports = class BetterKeybinds {
       console.error("[BetterKeybinds] BdApi unavailable.");
       return;
     }
-    this.discord = new DiscordBridge(BdApi);
+    this.discord = new DiscordBridge(BdApi, this.log);
+    this.log.subscribe((entry) => this.mirrorToConsole(entry));
     const pluginName = this.meta?.name || "BetterKeybinds";
     const { fresh, state } = loadState(BdApi, pluginName, actionTypes());
     this.state = state;
@@ -57,10 +70,12 @@ module.exports = class BetterKeybinds {
         try {
           this.discord?.refresh();
           this.engine?.refresh();
+          this.logProbeSummary("idle-refresh");
         } catch { /* next refresh covers it */ }
       });
     } catch { /* ignore */ }
-    this.log(`started (${enabled}/${state.binds.length} binds active)`);
+    this.logProbeSummary("startup");
+    this.log.info("plugin", `started (${enabled}/${state.binds.length} binds active)`);
   }
 
   stop() {
@@ -71,7 +86,9 @@ module.exports = class BetterKeybinds {
     try {
       if (globalThis.BetterKeybinds === this) delete globalThis.BetterKeybinds;
     } catch { /* ignore */ }
-    this.log("stopped");
+    try {
+      this.log.info("plugin", "stopped");
+    } catch { /* ignore */ }
   }
 
   async runBindById(id, source = "manual") {
@@ -79,6 +96,9 @@ module.exports = class BetterKeybinds {
     if (!bind) return { message: "Bind not found.", ok: false };
     if (!bind.enabled) return { message: "Bind is disabled.", ok: false };
     const res = await runBind(bind, { discord: this.discord });
+    try {
+      this.log[res.ok ? "info" : "warn"]("run", `${bind.type} via ${source}: ${res.message || (res.ok ? "OK" : "failed")}`);
+    } catch { /* ignore */ }
     if (!res.ok || bind.toastOnRun) {
       this.discord?.showToast(
         res.ok ? `${res.message || "OK"} (${source})` : (res.message || "Bind failed"),
@@ -114,10 +134,14 @@ module.exports = class BetterKeybinds {
       return "<div style='padding:16px'>BetterKeybinds: settings unavailable (BdApi.React missing).</div>";
     }
     return React.createElement(SettingsPanel, {
+      diagnosticsText: () => this.discord.diagnosticsText(`BetterKeybinds diagnostics (v${this.meta?.version || "?"})`),
       discord: this.discord,
       initialBinds: this.state.binds,
+      log: this.log,
       onBinds: (binds) => this.updateBinds(binds),
       onRun: (id) => this.runBindById(id, "manual"),
+      onSettings: (settings) => this.updateSettings(settings),
+      probe: () => this.discord.probe(),
       React,
       settings: this.state.settings
     });

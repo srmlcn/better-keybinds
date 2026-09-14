@@ -8,6 +8,7 @@ const STATE_VERSION = 2;
 const MAX_KEYBIND_KEYS = 5;
 
 const DEFAULT_SETTINGS = {
+  debugLogging: true,
   defaultGlobal: false,
   defaultToast: true
 };
@@ -55,6 +56,7 @@ function validateBind(bind, knownTypes) {
 function sanitizeSettings(settings) {
   const s = settings && typeof settings === "object" ? settings : {};
   return {
+    debugLogging: s.debugLogging === false ? false : DEFAULT_SETTINGS.debugLogging,
     defaultGlobal: s.defaultGlobal === true ? true : DEFAULT_SETTINGS.defaultGlobal,
     defaultToast: s.defaultToast === false ? false : DEFAULT_SETTINGS.defaultToast
   };

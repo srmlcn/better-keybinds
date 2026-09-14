@@ -40,17 +40,29 @@ function bindLabel(bind) {
 // keybind capture button. Native controls only (no BdApi.Components
 // dependency). React is injected via props.
 function SettingsPanel(props) {
-  const { React, discord, initialBinds, onBinds, onRun, settings } = props;
+  const { React, diagnosticsText, discord, initialBinds, log, onBinds, onRun, onSettings, probe, settings } = props;
   const [binds, setBinds] = React.useState(initialBinds || []);
   const [recordingId, setRecordingId] = React.useState(null);
   const [recordedKeys, setRecordedKeys] = React.useState([]);
   const [ioText, setIoText] = React.useState("");
   const [notice, setNotice] = React.useState(null);
   const [lastResult, setLastResult] = React.useState(null);
+  const [status, setStatus] = React.useState(() => safeProbe());
+  const [logTick, setLogTick] = React.useState(0);
+  const [debugOn, setDebugOn] = React.useState(settings?.debugLogging !== false);
   const pressedRef = React.useRef(new Set());
   const collectedRef = React.useRef([]);
   const bindsRef = React.useRef(binds);
+  const logPreRef = React.useRef(null);
   bindsRef.current = binds;
+
+  function safeProbe() {
+    try {
+      return probe?.() || null;
+    } catch {
+      return null;
+    }
+  }
 
   const conflicts = React.useMemo(() => detectConflicts(binds), [binds]);
   const globalSupported = React.useMemo(() => {
@@ -199,6 +211,45 @@ function SettingsPanel(props) {
     say("info", "All binds deleted.");
   }
 
+  function copyDiagnostics() {
+    let text = "";
+    try {
+      text = `${diagnosticsText?.() || ""}\n\n--- log ---\n${log?.toText(150) || "(no log)"}`;
+    } catch (error) {
+      say("error", error?.message || String(error));
+      return;
+    }
+    const done = (ok) => say(ok ? "info" : "warning", ok ? "Diagnostics copied." : "Copy failed; select manually.");
+    try {
+      if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+      else {
+        setIoText(text);
+        done(false);
+      }
+    } catch {
+      setIoText(text);
+      done(false);
+    }
+  }
+
+  function toggleDebug(checked) {
+    setDebugOn(checked);
+    try {
+      onSettings?.({ ...settings, debugLogging: checked });
+    } catch { /* non-fatal */ }
+  }
+
+  React.useEffect(() => {
+    if (!log?.subscribe) return undefined;
+    const unsub = log.subscribe(() => setLogTick((t) => t + 1));
+    return unsub;
+  }, [log]);
+
+  React.useEffect(() => {
+    const el = logPreRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logTick]);
+
   const s = {
     badge: (on) => ({
       background: on ? "#248046" : "#4e5058",
@@ -279,6 +330,21 @@ function SettingsPanel(props) {
       whiteSpace: "nowrap"
     }),
     label: { color: "var(--text-muted, #949ba4)", fontSize: 11, fontWeight: 600 },
+    logPre: {
+      background: "var(--background-tertiary, #1e1f22)",
+      border: "1px solid var(--background-modifier-accent, #3f4248)",
+      borderRadius: 6,
+      boxSizing: "border-box",
+      color: "var(--text-normal, #dbdee1)",
+      fontFamily: "monospace",
+      fontSize: 11,
+      marginTop: 6,
+      maxHeight: 180,
+      overflowY: "auto",
+      padding: 8,
+      whiteSpace: "pre-wrap",
+      width: "100%"
+    },
     notice: (kind) => ({
       background: kind === "error" ? "#a12829" : kind === "warning" ? "#7a5c00" : "#2c5f8a",
       borderRadius: 6,
@@ -298,7 +364,17 @@ function SettingsPanel(props) {
     }),
     root: { color: "var(--text-normal, #dbdee1)", fontSize: 13, padding: "4px 4px 16px" },
     row: { alignItems: "center", display: "flex", flexWrap: "wrap", gap: 8 },
+    sectionTitle: { fontSize: 13, fontWeight: 700, margin: "14px 0 4px" },
     small: { color: "var(--text-muted, #949ba4)", fontSize: 11 },
+    statusDot: (ok) => ({
+      background: ok ? "#248046" : "#a12829",
+      borderRadius: "50%",
+      display: "inline-block",
+      height: 8,
+      marginRight: 6,
+      width: 8
+    }),
+    statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
     title: { fontSize: 16, fontWeight: 700, margin: 0 },
     toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
   };
@@ -476,6 +552,37 @@ function SettingsPanel(props) {
         />
         <div style={s.small}>Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.</div>
       </div>
+
+      <h3 style={s.sectionTitle}>Diagnostics</h3>
+      <div style={s.toolbar}>
+        <button onClick={() => setStatus(safeProbe())} style={s.btn}>Refresh status</button>
+        <button onClick={copyDiagnostics} style={s.btnPrimary}>Copy diagnostics</button>
+        <button onClick={() => { try { log?.clear(); } catch { /* ignore */ } setLogTick((t) => t + 1); }} style={s.btn}>Clear log</button>
+        <label style={s.checkRow}>
+          <input checked={debugOn} onChange={(e) => toggleDebug(e.target.checked)} type="checkbox" />
+          <span>Debug logging to console</span>
+        </label>
+      </div>
+      {status ? (
+        <div style={s.statusGrid}>
+          <span><span style={s.statusDot(status.flux)} />Flux</span>
+          <span><span style={s.statusDot(status.mediaEngine)} />MediaEngine ({status.mediaMethods.length}/7)</span>
+          <span><span style={s.statusDot(status.voiceActions)} />Voice</span>
+          <span><span style={s.statusDot(status.channelActions)} />Channel</span>
+          <span><span style={s.statusDot(status.messageActions)} />Message</span>
+          <span><span style={s.statusDot(status.selectedChannel)} />SelectedCh</span>
+          <span><span style={s.statusDot(status.discordUtils)} />Native</span>
+          <span><span style={s.statusDot(status.keycodeMap)} />Keymap</span>
+          <span style={s.small}>platform: {status.platform}</span>
+          <span style={s.small}>out: {status.outputVolume ?? "?"}</span>
+          <span style={s.small}>in: {status.inputVolume ?? "?"}</span>
+          <span style={s.small}>mute: {String(status.selfMute ?? "?")}</span>
+          <span style={s.small}>deaf: {String(status.selfDeaf ?? "?")}</span>
+        </div>
+      ) : (
+        <div style={s.small}>Status unavailable.</div>
+      )}
+      <pre ref={logPreRef} style={s.logPre}>{log?.toText(80) || "(empty)"}</pre>
     </div>
   );
 }
