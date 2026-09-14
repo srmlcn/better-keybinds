@@ -840,27 +840,66 @@ class DiscordBridge {
     return sources.find((s) => s?.type === "screen" || String(s?.id || "").startsWith("screen:")) || null;
   }
 
+  // Discord's current enumerator is:
+  //   getDesktopSources(mediaEngine, isWindows, ["screen","window"], extra)
+  // Older builds omit the isWindows flag. Never call with a null engine —
+  // that path reads `.supports` and throws.
   async getDesktopSources() {
-    const fn = this.findCodeFunction("desktop sources");
-    if (!fn) throw new Error("capture-unavailable");
     const engine = this.getMediaEngine();
+    const fn = this.findCodeFunction("desktop sources");
+    const types = ["screen", "window"];
+    const isWindows = this.getPlatform() === "win32";
     let lastError = null;
-    // The enumerator may not need the engine at all; the null attempt also
-    // covers sessions where the media store isn't resolvable.
-    for (const [arg, label] of [[engine, "engine"], [null, "null-engine"]]) {
-      try {
-        const sources = await fn(arg, ["screen", "window"], null);
-        if (Array.isArray(sources)) {
-          this.debug(`desktop sources via ${label}: ${sources.length}`);
-          return sources;
+    if (fn && engine) {
+      const attempts = [
+        { args: [engine, isWindows, types, null], label: `enumerator-winflag(arity ${fn.length})` },
+        { args: [engine, types, null], label: "enumerator-legacy" }
+      ];
+      for (const attempt of attempts) {
+        try {
+          const sources = await fn(...attempt.args);
+          if (Array.isArray(sources)) {
+            this.debug(`desktop sources via ${attempt.label}: ${sources.length}`);
+            return sources;
+          }
+          lastError = new Error("capture-bad-result");
+        } catch (error) {
+          lastError = error;
+          this.debug(`desktop sources via ${attempt.label} threw: ${error?.message || error}`);
         }
-        lastError = new Error("capture-bad-result");
-      } catch (error) {
-        lastError = error;
-        this.debug(`desktop sources via ${label} threw: ${error?.message || error}`);
+      }
+    } else if (fn && !engine) {
+      this.debug("desktop sources: enumerator found but media engine is null");
+    } else if (!fn) {
+      this.debug("desktop sources: enumerator missing");
+    }
+    const previews = await this.getPreviewSources();
+    if (previews.length) {
+      this.debug(`desktop sources via previews: ${previews.length}`);
+      return previews;
+    }
+    throw lastError || new Error("capture-unavailable");
+  }
+
+  async getPreviewSources() {
+    const hosts = [this.getMediaEngine(), this.getMediaEngineStore()].filter(Boolean);
+    const out = [];
+    for (const [method, type] of [["getWindowPreviews", "window"], ["getScreenPreviews", "screen"]]) {
+      for (const host of hosts) {
+        if (typeof host[method] !== "function") continue;
+        try {
+          const list = await host[method](176, 99);
+          if (!Array.isArray(list)) continue;
+          for (const item of list) {
+            if (item && item.id) out.push({ id: item.id, name: item.name, type });
+          }
+          break;
+        } catch (error) {
+          this.debug(`${method} threw: ${error?.message || error}`);
+        }
       }
     }
-    throw lastError || new Error("capture-failed");
+    return out;
   }
 
   isSoundshareEnabled() {

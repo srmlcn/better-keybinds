@@ -111,7 +111,7 @@ If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps
 - **Global chord does nothing on Linux/Mac**: platform keycodes come from Discord's key map with a Windows fallback; unresolvable keys are reported.
 - **"No game detected" toast**: Discord doesn't see a running game. Check Settings → Game Activity for "Now playing"; add the game manually if needed.
 - **"Couldn't find a window" toast**: the game was detected but has no capture source. Unminimize/restore the game window and retry.
-- **"Couldn't reach screen capture" toast**: Discord's capture enumerator wasn't found. Reload Discord (Ctrl+R) and retry.
+- **"Couldn't reach screen capture" toast**: Discord's capture enumerator rejected the call. Reload Discord (Ctrl+R) and retry; if it persists, Copy diagnostics.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
 - Console access: the running instance is exposed as `globalThis.BetterKeybinds`.
 

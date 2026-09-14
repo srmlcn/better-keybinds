@@ -527,6 +527,52 @@ describe("waitFor", () => {
   });
 });
 
+describe("getDesktopSources", () => {
+  it("uses the isWindows flag signature first", async () => {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("mediaEngine", { getMediaEngine: () => ({ id: "engine" }) });
+    d.cache.set("code:desktop sources", async (media, second, third) => {
+      calls.push([Boolean(media), typeof second, Array.isArray(third)]);
+      if (typeof second !== "boolean") throw new Error("Invalid argument at index 0: type mismatch");
+      return [{ id: "window:1:0", name: "Doom" }];
+    });
+    const sources = await d.getDesktopSources();
+    assert.equal(sources[0].id, "window:1:0");
+    assert.deepEqual(calls[0], [true, "boolean", true]);
+    assert.equal(calls.length, 1);
+  });
+  it("falls back to the legacy 3-arg signature", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("mediaEngine", { getMediaEngine: () => ({ id: "engine" }) });
+    d.cache.set("code:desktop sources", async (_media, second) => {
+      if (typeof second === "boolean") throw new Error("unexpected flag");
+      if (!Array.isArray(second)) throw new Error("need types");
+      return [{ id: "screen:0:0", name: "Screen 1" }];
+    });
+    assert.equal((await d.getDesktopSources())[0].id, "screen:0:0");
+  });
+  it("falls back to window and screen previews", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("mediaEngine", {
+      getMediaEngine: () => ({
+        getScreenPreviews: async () => [{ id: "screen:0:0", name: "Screen 1" }],
+        getWindowPreviews: async () => [{ id: "window:2:0", name: "DOOM" }]
+      })
+    });
+    const sources = await d.getDesktopSources();
+    assert.deepEqual(sources.map((s) => s.id), ["window:2:0", "screen:0:0"]);
+    assert.equal(sources[0].type, "window");
+  });
+  it("does not call the enumerator with a null engine", async () => {
+    let called = false;
+    const d = new DiscordBridge({});
+    d.cache.set("code:desktop sources", async () => { called = true; return []; });
+    await assert.rejects(() => d.getDesktopSources(), /capture-unavailable/);
+    assert.equal(called, false);
+  });
+});
+
 describe("stream actions", () => {
   function streamBridge({ games, inVoice = true, selfStream = null, sources, startFn = null, stopFn = null } = {}) {
     const state = { stream: selfStream };
@@ -540,6 +586,7 @@ describe("stream actions", () => {
       getVisibleGame: () => null,
       isDetectionEnabled: () => true
     });
+    d.cache.set("mediaEngine", { getMediaEngine: () => ({ supports: () => true }) });
     d.cache.set("code:desktop sources", async () => sources ?? [{ id: "window:2:0", name: "DOOM", sourcePid: 4242 }]);
     d.cache.set("code:type:\"STREAM_START\"", startFn || (async (guildId, channelId, opts) => {
       calls.push([guildId, channelId, opts]);
