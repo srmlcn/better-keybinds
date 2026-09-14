@@ -63,7 +63,7 @@ function fakeDiscord(overrides = {}) {
 describe("runAction", () => {
   it("toggles output volume via bridge", async () => {
     let got = null;
-    const discord = fakeDiscord({ setOutputVolume: (v) => { got = v; return { ok: true }; } });
+    const discord = fakeDiscord({ setOutputVolume: (v) => { got = v; return { message: `Output volume 50% -> ${v}%`, ok: true }; } });
     const res = await a.runAction("output.toggle", { a: 50, b: 100 }, { discord });
     assert.equal(res.ok, true);
     assert.equal(got, 100);
@@ -92,38 +92,23 @@ describe("runAction", () => {
     assert.deepEqual(discord.sent[1], ["c9", "yo"]);
     assert.equal(r2.ok, true);
   });
-  it("waits and toasts", async () => {
-    const t0 = Date.now();
-    const r = await a.runAction("util.wait", { ms: 25 }, { discord: fakeDiscord() });
-    assert.equal(r.ok, true);
-    assert.ok(Date.now() - t0 >= 20);
+  it("shows toasts", async () => {
     const t = await a.runAction("util.toast", { text: "x" }, { discord: fakeDiscord() });
     assert.equal(t.ok, true);
   });
 });
 
-describe("runMacroActions", () => {
-  it("runs sequentially and aborts on non-util failure", async () => {
-    const calls = [];
-    const discord = fakeDiscord({
-      setOutputVolume: (v) => { calls.push(v); return v === 1 ? { message: "boom", ok: false } : { ok: true }; }
-    });
-    const res = await a.runMacroActions([
-      { params: { volume: 1 }, type: "output.set" },
-      { params: { volume: 2 }, type: "output.set" }
-    ], { discord });
-    assert.equal(res.ok, false);
-    assert.equal(res.aborted, true);
-    assert.deepEqual(calls, [1]);
-  });
-  it("continues past util failures", async () => {
+describe("runBind", () => {
+  it("runs the bind's single action", async () => {
     const discord = fakeDiscord();
-    const res = await a.runMacroActions([
-      { params: { url: "https://example.com" }, type: "util.openUrl" },
-      { params: { volume: 30 }, type: "output.set" }
-    ], { discord });
-    assert.equal(res.ok, false);
-    assert.equal(res.results.length, 2);
-    assert.equal(res.results[1].ok, true);
+    const res = await a.runBind({ params: { volume: 30 }, type: "output.set" }, { discord });
+    assert.equal(res.ok, true);
+  });
+  it("rejects binds without a valid action", async () => {
+    const discord = fakeDiscord();
+    assert.equal((await a.runBind(null, { discord })).ok, false);
+    assert.equal((await a.runBind({ params: {} }, { discord })).ok, false);
+    assert.equal((await a.runBind({ params: {}, type: "nope" }, { discord })).ok, false);
+    assert.equal((await a.runBind({ params: { volume: 999 }, type: "output.set" }, { discord })).ok, false);
   });
 });

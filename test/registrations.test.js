@@ -2,19 +2,19 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { MacroEngine, numericIdFor } = require("../src/lib/registrations");
+const { BindEngine, numericIdFor } = require("../src/lib/registrations");
 
-function makeEngine(macros, overrides = {}) {
+function makeEngine(binds, overrides = {}) {
   const calls = [];
-  const engine = new MacroEngine({
+  const engine = new BindEngine({
     discord: {
       getDiscordUtils: () => null,
       getKeycodeMap: () => null,
       hasGlobalSupport: () => false
     },
-    getMacros: () => macros,
+    getBinds: () => binds,
     notify: () => {},
-    runMacroById: (id, source) => calls.push([id, source]),
+    runBindById: (id, source) => calls.push([id, source]),
     ...overrides
   });
   return { calls, engine };
@@ -26,20 +26,20 @@ function keyEvent(key, extra = {}) {
 
 describe("numericIdFor", () => {
   it("is stable and in range", () => {
-    const a = numericIdFor("macro-1");
-    assert.equal(a, numericIdFor("macro-1"));
+    const a = numericIdFor("bind-1");
+    assert.equal(a, numericIdFor("bind-1"));
     assert.ok(a >= 4100000 && a < 4150000);
   });
 });
 
 describe("in-app matching", () => {
   it("fires exact chords once until release", () => {
-    const macros = [{ enabled: true, id: "m1", keybind: ["Control", "K"] }];
-    const { calls, engine } = makeEngine(macros);
+    const binds = [{ enabled: true, id: "b1", keybind: ["Control", "K"] }];
+    const { calls, engine } = makeEngine(binds);
     engine.handleKeyDown(keyEvent("Control"));
     assert.deepEqual(calls, []);
     engine.handleKeyDown(keyEvent("k"));
-    assert.deepEqual(calls, [["m1", "in-app"]]);
+    assert.deepEqual(calls, [["b1", "in-app"]]);
     engine.handleKeyDown(keyEvent("k", { repeat: true }));
     engine.handleKeyDown(keyEvent("Shift"));
     assert.equal(calls.length, 1);
@@ -53,18 +53,18 @@ describe("in-app matching", () => {
     engine.handleKeyDown(keyEvent("k"));
     assert.equal(calls.length, 2);
   });
-  it("ignores disabled macros and empty binds", () => {
-    const macros = [
+  it("ignores disabled binds and empty chords", () => {
+    const binds = [
       { enabled: false, id: "off", keybind: ["F8"] },
       { enabled: true, id: "empty", keybind: [] }
     ];
-    const { calls, engine } = makeEngine(macros);
+    const { calls, engine } = makeEngine(binds);
     engine.handleKeyDown(keyEvent("F8"));
     assert.deepEqual(calls, []);
   });
   it("skips single letters while typing", () => {
-    const macros = [{ enabled: true, id: "m1", keybind: ["G"] }];
-    const { calls, engine } = makeEngine(macros);
+    const binds = [{ enabled: true, id: "b1", keybind: ["G"] }];
+    const { calls, engine } = makeEngine(binds);
     engine.handleKeyDown(keyEvent("g", { target: { tagName: "TEXTAREA" } }));
     assert.deepEqual(calls, []);
   });
@@ -73,8 +73,8 @@ describe("in-app matching", () => {
 describe("global refresh without native support", () => {
   it("registers nothing and warns once", () => {
     const notes = [];
-    const macros = [{ enabled: true, global: true, id: "g1", keybind: ["Control", "B"], name: "G" }];
-    const { engine } = makeEngine(macros, { notify: (m, t) => notes.push([m, t]) });
+    const binds = [{ enabled: true, global: true, id: "g1", keybind: ["Control", "B"], type: "output.toggle" }];
+    const { engine } = makeEngine(binds, { notify: (m, t) => notes.push([m, t]) });
     engine.refreshGlobal();
     engine.refreshGlobal();
     assert.equal(engine.globalStatus.supported, false);
@@ -88,8 +88,8 @@ describe("global refresh without native support", () => {
       inputEventRegister: (id, keys, cb, opts) => registered.set(id, { cb, keys, opts }),
       inputEventUnregister: (id) => registered.delete(id)
     };
-    const macros = [{ enabled: true, global: true, id: "g1", keybind: ["Control", "B"], name: "G" }];
-    const { calls, engine } = makeEngine(macros, {
+    const binds = [{ enabled: true, global: true, id: "g1", keybind: ["Control", "B"], type: "output.toggle" }];
+    const { calls, engine } = makeEngine(binds, {
       discord: {
         getDiscordUtils: () => utils,
         getKeycodeMap: () => ({ b: 0x42, ctrl: 0xa2 }),
