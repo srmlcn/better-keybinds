@@ -26,7 +26,7 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 | Output volume | Set / Adjust / Toggle | Toggle flips between levels A and B; default 50/100 |
 | Input volume | Set / Adjust | Mic level, same 0–100 scale |
 | Self voice | Toggle/Set mute, Toggle/Set deafen, Disconnect | Set is a no-op when already in that state |
-| Streaming | Start game, Start screen, Stop, Toggle game | Streams to your current voice channel |
+| Streaming | Toggle game, Toggle screen, Stop | Streams to your current voice channel |
 | Channels | Go to channel | Needs Guild + Channel ID (Developer Mode → Copy ID) |
 | Messages | Send message | Current channel, or a saved channel ID |
 | Utility | Toast, Open URL | Toast is handy for testing that a chord fires |
@@ -57,17 +57,16 @@ Discord's Settings → Voice & Video slider does not always repaint while open; 
 The Streaming actions Go Live in your current voice channel and reuse Discord's own streaming controls, so quality/sound defaults match the normal Go Live button. Requirements:
 
 - You're in a voice channel (server or DM call).
-- For **Start streaming game**: Discord detects your game. Detection comes from Settings → **Game Activity** — if your game isn't listed there as "Now playing", start the game first, or add it manually in Game Activity.
+- For **Toggle game stream**: Discord detects your game. Detection comes from Settings → **Game Activity** — if your game isn't listed there as "Now playing", start the game first, or add it manually in Game Activity.
 - The game window isn't minimized (minimized windows often disappear from capture sources).
 
 Behavior:
 
-- **Start streaming game** picks your foreground game, or the most recently focused running game, and streams that window — no picker.
-- **Start streaming screen** streams your primary screen.
+- **Toggle game stream** picks your foreground game, or the most recently focused running game, and streams that window — no picker. Press again to stop.
+- **Toggle screen stream** streams your primary screen. Press again to stop.
 - **Stop streaming** ends your stream; it's a no-op when you're not live.
-- **Toggle game stream** starts your game stream, or stops if you're already live.
 
-Every stream start/stop is verified against Discord's live stream state before the toast reports success. Starting while already live is a no-op ("Already streaming — stop first to switch.").
+Every stream start/stop is verified against Discord's live stream state before the toast reports success. Toggling while already live stops the current stream (game or screen).
 
 ## Import / export
 

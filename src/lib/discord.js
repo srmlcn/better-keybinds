@@ -1031,6 +1031,10 @@ class DiscordBridge {
     return this.getSelfStream() ? this.stopOwnStream() : this.startGameStream();
   }
 
+  async toggleScreenStream() {
+    return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream();
+  }
+
   // Probe native helper modules for capture/voice APIs (keys only, cached).
   inspectNativeModules() {
     if (this.nativeCache) return this.nativeCache;

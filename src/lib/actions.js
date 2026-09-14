@@ -109,15 +109,15 @@ const ACTION_DEFS = [
   },
   {
     category: "Streaming",
-    description: "Start streaming your detected game to the voice channel.",
-    label: "Start streaming game",
+    description: "Start streaming your detected game, or stop if already live.",
+    label: "Toggle game stream",
     params: [],
     type: "stream.startGame"
   },
   {
     category: "Streaming",
-    description: "Start streaming your screen to the voice channel.",
-    label: "Start streaming screen",
+    description: "Start streaming your screen, or stop if already live.",
+    label: "Toggle screen stream",
     params: [],
     type: "stream.startScreen"
   },
@@ -127,13 +127,6 @@ const ACTION_DEFS = [
     label: "Stop streaming",
     params: [],
     type: "stream.stop"
-  },
-  {
-    category: "Streaming",
-    description: "Start streaming your game, or stop if already live.",
-    label: "Toggle game stream",
-    params: [],
-    type: "stream.toggleGame"
   },
   {
     category: "Utility",
@@ -151,12 +144,20 @@ const ACTION_DEFS = [
   }
 ];
 
+const ACTION_ALIASES = {
+  "stream.toggleGame": "stream.startGame"
+};
+
+function resolveActionType(type) {
+  return ACTION_ALIASES[type] || type;
+}
+
 function getActionDef(type) {
-  return ACTION_DEFS.find((d) => d.type === type) || null;
+  return ACTION_DEFS.find((d) => d.type === resolveActionType(type)) || null;
 }
 
 function actionTypes() {
-  return ACTION_DEFS.map((d) => d.type);
+  return ACTION_DEFS.map((d) => d.type).concat(Object.keys(ACTION_ALIASES));
 }
 
 function clampVolume(value) {
@@ -286,13 +287,12 @@ async function runAction(type, params, ctx) {
       case "voice.disconnect":
         return discord.disconnectVoice();
       case "stream.startGame":
-        return await discord.startGameStream();
-      case "stream.startScreen":
-        return await discord.startScreenStream();
-      case "stream.stop":
-        return await discord.stopOwnStream();
       case "stream.toggleGame":
         return await discord.toggleGameStream();
+      case "stream.startScreen":
+        return await discord.toggleScreenStream();
+      case "stream.stop":
+        return await discord.stopOwnStream();
       case "nav.goToChannel":
         return discord.goToChannel(values.guildId.trim(), values.channelId.trim());
       case "message.send": {

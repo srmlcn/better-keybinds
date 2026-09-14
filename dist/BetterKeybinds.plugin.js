@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.6.1
+ * @version 2.6.2
  * @runAt idle
  */
 "use strict";
@@ -1251,6 +1251,9 @@ var require_discord = __commonJS({
       async toggleGameStream() {
         return this.getSelfStream() ? this.stopOwnStream() : this.startGameStream();
       }
+      async toggleScreenStream() {
+        return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream();
+      }
       // Probe native helper modules for capture/voice APIs (keys only, cached).
       inspectNativeModules() {
         if (this.nativeCache) return this.nativeCache;
@@ -1957,15 +1960,15 @@ var require_actions = __commonJS({
       },
       {
         category: "Streaming",
-        description: "Start streaming your detected game to the voice channel.",
-        label: "Start streaming game",
+        description: "Start streaming your detected game, or stop if already live.",
+        label: "Toggle game stream",
         params: [],
         type: "stream.startGame"
       },
       {
         category: "Streaming",
-        description: "Start streaming your screen to the voice channel.",
-        label: "Start streaming screen",
+        description: "Start streaming your screen, or stop if already live.",
+        label: "Toggle screen stream",
         params: [],
         type: "stream.startScreen"
       },
@@ -1975,13 +1978,6 @@ var require_actions = __commonJS({
         label: "Stop streaming",
         params: [],
         type: "stream.stop"
-      },
-      {
-        category: "Streaming",
-        description: "Start streaming your game, or stop if already live.",
-        label: "Toggle game stream",
-        params: [],
-        type: "stream.toggleGame"
       },
       {
         category: "Utility",
@@ -1998,11 +1994,17 @@ var require_actions = __commonJS({
         type: "util.openUrl"
       }
     ];
+    var ACTION_ALIASES = {
+      "stream.toggleGame": "stream.startGame"
+    };
+    function resolveActionType(type) {
+      return ACTION_ALIASES[type] || type;
+    }
     function getActionDef(type) {
-      return ACTION_DEFS.find((d) => d.type === type) || null;
+      return ACTION_DEFS.find((d) => d.type === resolveActionType(type)) || null;
     }
     function actionTypes2() {
-      return ACTION_DEFS.map((d) => d.type);
+      return ACTION_DEFS.map((d) => d.type).concat(Object.keys(ACTION_ALIASES));
     }
     function clampVolume(value) {
       const n = Number(value);
@@ -2123,13 +2125,12 @@ var require_actions = __commonJS({
           case "voice.disconnect":
             return discord.disconnectVoice();
           case "stream.startGame":
-            return await discord.startGameStream();
-          case "stream.startScreen":
-            return await discord.startScreenStream();
-          case "stream.stop":
-            return await discord.stopOwnStream();
           case "stream.toggleGame":
             return await discord.toggleGameStream();
+          case "stream.startScreen":
+            return await discord.toggleScreenStream();
+          case "stream.stop":
+            return await discord.stopOwnStream();
           case "nav.goToChannel":
             return discord.goToChannel(values.guildId.trim(), values.channelId.trim());
           case "message.send": {

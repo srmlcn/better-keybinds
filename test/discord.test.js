@@ -657,6 +657,10 @@ describe("stream actions", () => {
     assert.equal((await idle.d.toggleGameStream()).message, "Streaming Doom");
     const live = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
     assert.equal((await live.d.toggleGameStream()).message, "Stream stopped.");
+    const screenIdle = streamBridge({ sources: [{ id: "screen:0:0", name: "Screen 1" }] });
+    assert.equal((await screenIdle.d.toggleScreenStream()).message, "Streaming your screen");
+    const screenLive = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
+    assert.equal((await screenLive.d.toggleScreenStream()).message, "Stream stopped.");
   });
   it("falls back to voice-state channel lookup", async () => {
     const d = new DiscordBridge({});

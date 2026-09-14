@@ -118,10 +118,9 @@ describe("runBind", () => {
 describe("stream actions", () => {
   it("routes stream binds to the bridge", async () => {
     const discord = fakeDiscord({
-      startGameStream: async () => ({ message: "Streaming Doom", ok: true }),
-      startScreenStream: async () => ({ message: "Streaming your screen", ok: true }),
       stopOwnStream: async () => ({ message: "Stream stopped.", ok: true }),
-      toggleGameStream: async () => ({ message: "Streaming Doom", ok: true })
+      toggleGameStream: async () => ({ message: "Streaming Doom", ok: true }),
+      toggleScreenStream: async () => ({ message: "Streaming your screen", ok: true })
     });
     assert.equal((await a.runBind({ params: {}, type: "stream.startGame" }, { discord })).message, "Streaming Doom");
     assert.equal((await a.runBind({ params: {}, type: "stream.startScreen" }, { discord })).message, "Streaming your screen");
@@ -131,7 +130,10 @@ describe("stream actions", () => {
   it("validates stream actions take no params", () => {
     assert.deepEqual(a.validateAction("stream.startGame", {}), []);
     assert.deepEqual(a.validateAction("stream.stop", {}), []);
-    assert.ok(a.getActionDef("stream.toggleGame"));
+    assert.equal(a.getActionDef("stream.toggleGame").type, "stream.startGame");
+    assert.equal(a.getActionDef("stream.startGame").label, "Toggle game stream");
+    assert.equal(a.getActionDef("stream.startScreen").label, "Toggle screen stream");
     assert.ok(a.actionTypes().includes("stream.startScreen"));
+    assert.ok(a.actionTypes().includes("stream.toggleGame"));
   });
 });
