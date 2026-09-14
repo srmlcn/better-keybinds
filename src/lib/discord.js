@@ -1,7 +1,7 @@
 "use strict";
 
 const { extractKeycodeMap } = require("./keybinds");
-const { amplitudeToPerceptual, perceptualToAmplitude, roundVolume } = require("./volume");
+const { amplitudeToSlider, roundVolume, sliderToAmplitude } = require("./volume");
 
 // Lazy, fault-tolerant access to Discord's internal webpack modules.
 // Every getter returns null (never throws) so Discord client updates
@@ -380,39 +380,12 @@ class DiscordBridge {
     return Math.min(100, Math.max(0, Math.round(n)));
   }
 
-  // Prefer Discord's own converters when present; otherwise the documented
-  // 50 dB / 6 dB PerceptualVolumeUtils curve.
-  getVolumeConverter() {
-    return this.cached("volumeCurve", () => (
-      this.findByProps("amplitudeToPerceptual", "perceptualToAmplitude")
-      || this.findModule((m) => typeof m?.amplitudeToPerceptual === "function" && typeof m?.perceptualToAmplitude === "function")
-    ));
-  }
-
-  toAmplitude(perceptual) {
-    try {
-      const conv = this.getVolumeConverter();
-      if (conv && typeof conv.perceptualToAmplitude === "function") {
-        const v = conv.perceptualToAmplitude(perceptual, 100);
-        if (typeof v === "number" && Number.isFinite(v)) return v;
-      }
-    } catch (error) {
-      this.debug(`perceptualToAmplitude threw: ${error?.message || error}`);
-    }
-    return perceptualToAmplitude(perceptual);
+  toAmplitude(percent) {
+    return sliderToAmplitude(percent);
   }
 
   toPerceptual(amplitude) {
-    try {
-      const conv = this.getVolumeConverter();
-      if (conv && typeof conv.amplitudeToPerceptual === "function") {
-        const v = conv.amplitudeToPerceptual(amplitude, 100);
-        if (typeof v === "number" && Number.isFinite(v)) return v;
-      }
-    } catch (error) {
-      this.debug(`amplitudeToPerceptual threw: ${error?.message || error}`);
-    }
-    return amplitudeToPerceptual(amplitude);
+    return amplitudeToSlider(amplitude);
   }
 
   readRawVolume(getter) {

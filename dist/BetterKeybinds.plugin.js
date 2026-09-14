@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.6.4
+ * @version 2.6.5
  * @runAt idle
  */
 "use strict";
@@ -316,20 +316,17 @@ var require_volume = __commonJS({
   "src/lib/volume.js"(exports2, module2) {
     "use strict";
     var VOLUME_MAX = 100;
-    var RANGE_DB = 50;
-    var BOOST_DB = 6;
-    function perceptualToAmplitude(perceptual, max = VOLUME_MAX) {
-      const p = Number(perceptual);
+    function sliderToAmplitude(percent, max = VOLUME_MAX) {
+      const p = Number(percent);
       if (!Number.isFinite(p) || p <= 0 || max <= 0) return 0;
-      const db = p > max ? (p - max) / max * BOOST_DB : p / max * RANGE_DB - RANGE_DB;
-      return max * 10 ** (db / 20);
+      const n = Math.max(0, p / max);
+      return max * n ** 3;
     }
-    function amplitudeToPerceptual(amplitude, max = VOLUME_MAX) {
+    function amplitudeToSlider(amplitude, max = VOLUME_MAX) {
       const a = Number(amplitude);
       if (!Number.isFinite(a) || a <= 0 || max <= 0) return 0;
-      const db = 20 * Math.log10(a / max);
-      const frac = db > 0 ? db / BOOST_DB + 1 : (db + RANGE_DB) / RANGE_DB;
-      return max * frac;
+      const n = Math.max(0, a / max);
+      return max * n ** (1 / 3);
     }
     function roundVolume(value) {
       const n = Number(value);
@@ -337,12 +334,10 @@ var require_volume = __commonJS({
       return Math.round(n);
     }
     module2.exports = {
-      BOOST_DB,
-      RANGE_DB,
       VOLUME_MAX,
-      amplitudeToPerceptual,
-      perceptualToAmplitude,
-      roundVolume
+      amplitudeToSlider,
+      roundVolume,
+      sliderToAmplitude
     };
   }
 });
@@ -352,7 +347,7 @@ var require_discord = __commonJS({
   "src/lib/discord.js"(exports2, module2) {
     "use strict";
     var { extractKeycodeMap } = require_keybinds();
-    var { amplitudeToPerceptual, perceptualToAmplitude, roundVolume } = require_volume();
+    var { amplitudeToSlider, roundVolume, sliderToAmplitude } = require_volume();
     var DiscordBridge2 = class _DiscordBridge {
       constructor(BdApi, log = null) {
         this.BdApi = BdApi;
@@ -659,34 +654,11 @@ var require_discord = __commonJS({
         if (!Number.isFinite(n)) return null;
         return Math.min(100, Math.max(0, Math.round(n)));
       }
-      // Prefer Discord's own converters when present; otherwise the documented
-      // 50 dB / 6 dB PerceptualVolumeUtils curve.
-      getVolumeConverter() {
-        return this.cached("volumeCurve", () => this.findByProps("amplitudeToPerceptual", "perceptualToAmplitude") || this.findModule((m) => typeof m?.amplitudeToPerceptual === "function" && typeof m?.perceptualToAmplitude === "function"));
-      }
-      toAmplitude(perceptual) {
-        try {
-          const conv = this.getVolumeConverter();
-          if (conv && typeof conv.perceptualToAmplitude === "function") {
-            const v = conv.perceptualToAmplitude(perceptual, 100);
-            if (typeof v === "number" && Number.isFinite(v)) return v;
-          }
-        } catch (error) {
-          this.debug(`perceptualToAmplitude threw: ${error?.message || error}`);
-        }
-        return perceptualToAmplitude(perceptual);
+      toAmplitude(percent) {
+        return sliderToAmplitude(percent);
       }
       toPerceptual(amplitude) {
-        try {
-          const conv = this.getVolumeConverter();
-          if (conv && typeof conv.amplitudeToPerceptual === "function") {
-            const v = conv.amplitudeToPerceptual(amplitude, 100);
-            if (typeof v === "number" && Number.isFinite(v)) return v;
-          }
-        } catch (error) {
-          this.debug(`amplitudeToPerceptual threw: ${error?.message || error}`);
-        }
-        return amplitudeToPerceptual(amplitude);
+        return amplitudeToSlider(amplitude);
       }
       readRawVolume(getter) {
         try {

@@ -2,30 +2,28 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { amplitudeToPerceptual, perceptualToAmplitude, roundVolume } = require("../src/lib/volume");
+const { amplitudeToSlider, roundVolume, sliderToAmplitude } = require("../src/lib/volume");
 
-describe("Discord perceptual volume curve", () => {
+describe("Discord device volume curve", () => {
   it("maps 0 and 100 to themselves", () => {
-    assert.equal(perceptualToAmplitude(0), 0);
-    assert.equal(perceptualToAmplitude(100), 100);
-    assert.equal(amplitudeToPerceptual(0), 0);
-    assert.equal(amplitudeToPerceptual(100), 100);
+    assert.equal(sliderToAmplitude(0), 0);
+    assert.equal(sliderToAmplitude(100), 100);
+    assert.equal(amplitudeToSlider(0), 0);
+    assert.equal(amplitudeToSlider(100), 100);
   });
-  it("converts slider 50% to ~5.62 amplitude (50 dB range)", () => {
-    assert.ok(Math.abs(perceptualToAmplitude(50) - 5.6234132519) < 1e-9);
+  it("cubes slider percent to amplitude", () => {
+    assert.equal(sliderToAmplitude(50), 12.5);
+    assert.ok(Math.abs(sliderToAmplitude(40) - 6.4) < 1e-9);
   });
-  it("converts amplitude 40/60 to the slider percents Discord shows", () => {
-    assert.equal(roundVolume(amplitudeToPerceptual(40)), 84);
-    assert.equal(roundVolume(amplitudeToPerceptual(60)), 91);
+  it("matches measured slider labels for raw amplitudes", () => {
+    assert.equal(roundVolume(amplitudeToSlider(40)), 74);
+    assert.equal(roundVolume(amplitudeToSlider(60)), 84);
+    assert.equal(roundVolume(amplitudeToSlider(3.1622776601683795)), 32);
   });
   it("round-trips slider percents", () => {
-    for (const p of [1, 10, 25, 40, 50, 60, 75, 90, 100, 150]) {
-      const back = amplitudeToPerceptual(perceptualToAmplitude(p));
+    for (const p of [1, 10, 25, 40, 50, 60, 75, 90, 100]) {
+      const back = amplitudeToSlider(sliderToAmplitude(p));
       assert.ok(Math.abs(back - p) < 1e-9, `${p} -> ${back}`);
     }
-  });
-  it("uses the 6 dB boost range above 100%", () => {
-    assert.ok(Math.abs(perceptualToAmplitude(200) - 199.5262314968) < 1e-6);
-    assert.ok(Math.abs(amplitudeToPerceptual(200) - 200.343426) < 1e-4);
   });
 });

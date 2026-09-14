@@ -1,27 +1,23 @@
 "use strict";
 
-// Discord's Voice & Video slider is perceptual (dB), while MediaEngineStore
-// and AUDIO_SET_*_VOLUME use linear amplitude. Same mapping as Discord's
-// PerceptualVolumeUtils / @discordapp/perceptual: 50 dB below 100%, 6 dB boost
-// above 100%. See https://github.com/discord/perceptual
-
+// Device output/input sliders (Voice & Video) are cubic, not Discord's 50 dB
+// per-user curve. Store/API values are linear amplitude; the slider label is
+// 100 * (amp/100)^(1/3). Measured: amplitude 40 → ~74% on the slider, so
+// writing 50 dB-converted 3.16 for a "40%" bind landed near 29%.
 const VOLUME_MAX = 100;
-const RANGE_DB = 50;
-const BOOST_DB = 6;
 
-function perceptualToAmplitude(perceptual, max = VOLUME_MAX) {
-  const p = Number(perceptual);
+function sliderToAmplitude(percent, max = VOLUME_MAX) {
+  const p = Number(percent);
   if (!Number.isFinite(p) || p <= 0 || max <= 0) return 0;
-  const db = p > max ? ((p - max) / max) * BOOST_DB : (p / max) * RANGE_DB - RANGE_DB;
-  return max * (10 ** (db / 20));
+  const n = Math.max(0, p / max);
+  return max * (n ** 3);
 }
 
-function amplitudeToPerceptual(amplitude, max = VOLUME_MAX) {
+function amplitudeToSlider(amplitude, max = VOLUME_MAX) {
   const a = Number(amplitude);
   if (!Number.isFinite(a) || a <= 0 || max <= 0) return 0;
-  const db = 20 * Math.log10(a / max);
-  const frac = db > 0 ? db / BOOST_DB + 1 : (db + RANGE_DB) / RANGE_DB;
-  return max * frac;
+  const n = Math.max(0, a / max);
+  return max * (n ** (1 / 3));
 }
 
 function roundVolume(value) {
@@ -31,10 +27,8 @@ function roundVolume(value) {
 }
 
 module.exports = {
-  BOOST_DB,
-  RANGE_DB,
   VOLUME_MAX,
-  amplitudeToPerceptual,
-  perceptualToAmplitude,
-  roundVolume
+  amplitudeToSlider,
+  roundVolume,
+  sliderToAmplitude
 };
