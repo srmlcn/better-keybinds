@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.0.0
+ * @version 2.1.0
  * @runAt idle
  */
 "use strict";
@@ -317,14 +317,33 @@ var require_discord = __commonJS({
     "use strict";
     var { extractKeycodeMap } = require_keybinds();
     var DiscordBridge2 = class _DiscordBridge {
-      constructor(BdApi) {
+      constructor(BdApi, log = null) {
         this.BdApi = BdApi;
+        this.log = log || null;
         this.cache = /* @__PURE__ */ new Map();
         this.lastAttempt = /* @__PURE__ */ new Map();
         this.retryTtlMs = 5e3;
         this.utilsTried = false;
         this.utilsCache = null;
         this.keymapCache = /* @__PURE__ */ new Map();
+      }
+      debug(message) {
+        try {
+          this.log?.debug("discord", message);
+        } catch {
+        }
+      }
+      info(message) {
+        try {
+          this.log?.info("discord", message);
+        } catch {
+        }
+      }
+      warn(message) {
+        try {
+          this.log?.warn("discord", message);
+        } catch {
+        }
       }
       refresh() {
         this.cache.clear();
@@ -378,7 +397,12 @@ var require_discord = __commonJS({
         } catch {
           value = null;
         }
-        if (value) this.cache.set(key, value);
+        if (value) {
+          this.cache.set(key, value);
+          this.debug(`webpack resolved ${key}`);
+        } else {
+          this.debug(`webpack miss ${key} (will retry)`);
+        }
         return value;
       }
       getFlux() {
@@ -411,12 +435,15 @@ var require_discord = __commonJS({
       dispatch(type, payload = {}) {
         const flux = this.getFlux();
         if (!flux || typeof flux.dispatch !== "function") {
+          this.warn(`dispatch ${type} failed: flux unavailable`);
           return { ok: false, message: "Flux dispatcher unavailable (Discord update?)." };
         }
         try {
           flux.dispatch({ type, ...payload });
+          this.debug(`dispatch ${type} ${JSON.stringify(payload)}`);
           return { ok: true };
         } catch (error) {
+          this.warn(`dispatch ${type} threw: ${error?.message || error}`);
           return { ok: false, message: error?.message || String(error) };
         }
       }
@@ -459,9 +486,12 @@ var require_discord = __commonJS({
         } catch {
         }
         if (!res.ok && !direct) {
+          this.warn("output volume: no write path available");
           return { ok: false, message: "Output volume module unavailable (Discord update?)." };
         }
-        return this.verifyVolume("Output", before, v);
+        const out = this.verifyVolume("Output", before, v);
+        this.info(`output volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+        return out;
       }
       setInputVolume(value) {
         const v = _DiscordBridge.clampVolume(value);
@@ -478,9 +508,12 @@ var require_discord = __commonJS({
         } catch {
         }
         if (!res.ok && !direct) {
+          this.warn("input volume: no write path available");
           return { ok: false, message: "Input volume module unavailable (Discord update?)." };
         }
-        return this.verifyVolume("Input", before, v);
+        const out = this.verifyVolume("Input", before, v);
+        this.info(`input volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+        return out;
       }
       verifyVolume(label, before, wanted) {
         const after = label === "Input" ? this.getInputVolume() : this.getOutputVolume();
@@ -654,6 +687,7 @@ var require_discord = __commonJS({
         } catch {
           this.utilsCache = null;
         }
+        this.debug(`discord_utils ${this.utilsCache ? "found" : "missing"}`);
         return this.utilsCache;
       }
       hasGlobalSupport() {
@@ -677,7 +711,67 @@ var require_discord = __commonJS({
           if (found) break;
         }
         this.keymapCache.set(platform, found);
+        this.debug(`keycode map (${platform}): ${found ? "found" : "missing"}`);
         return found;
+      }
+      // Snapshot of every Discord dependency for the diagnostics panel.
+      probe() {
+        const media = this.getMediaEngineStore();
+        return {
+          channelActions: Boolean(this.getChannelActions()),
+          channelRouter: Boolean(this.getChannelRouter()),
+          discordUtils: this.hasGlobalSupport(),
+          flux: Boolean(this.getFlux()),
+          inputVolume: this.getInputVolume(),
+          keycodeMap: Boolean(this.getKeycodeMap()),
+          mediaEngine: Boolean(media),
+          mediaMethods: media ? ["getOutputVolume", "setOutputVolume", "getInputVolume", "setInputVolume", "getMediaEngine", "isSelfMute", "isSelfDeaf"].filter((k) => typeof media[k] === "function") : [],
+          messageActions: Boolean(this.getMessageActions()),
+          outputVolume: this.getOutputVolume(),
+          platform: this.getPlatform(),
+          selectedChannel: Boolean(this.getSelectedChannelStore()),
+          selfDeaf: this.isSelfDeaf(),
+          selfMute: this.isSelfMute(),
+          voiceActions: Boolean(this.getVoiceActions())
+        };
+      }
+      probeSummary() {
+        const p = this.probe();
+        const mods = [
+          ["flux", p.flux],
+          ["media", p.mediaEngine],
+          ["voice", p.voiceActions],
+          ["channel", p.channelActions],
+          ["message", p.messageActions],
+          ["selected", p.selectedChannel],
+          ["native", p.discordUtils],
+          ["keymap", p.keycodeMap]
+        ].map(([k, v]) => `${k}:${v ? "ok" : "MISS"}`).join(" ");
+        return `${mods} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
+      }
+      diagnosticsText(header = "") {
+        const p = this.probe();
+        const yn = (v) => v ? "found" : "MISSING";
+        const val = (v) => v === null || v === void 0 ? "unreadable" : String(v);
+        return [
+          header,
+          `time: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+          `bdApi: ${this.BdApi?.version ?? "unknown"}`,
+          `platform: ${p.platform}`,
+          `flux: ${yn(p.flux)}`,
+          `mediaEngine: ${yn(p.mediaEngine)} (methods: ${p.mediaMethods.join(", ") || "none"})`,
+          `voiceActions: ${yn(p.voiceActions)}`,
+          `channelActions: ${yn(p.channelActions)}`,
+          `channelRouter: ${yn(p.channelRouter)}`,
+          `messageActions: ${yn(p.messageActions)}`,
+          `selectedChannel: ${yn(p.selectedChannel)}`,
+          `discordUtils(global): ${yn(p.discordUtils)}`,
+          `keycodeMap: ${yn(p.keycodeMap)}`,
+          `outputVolume: ${val(p.outputVolume)}`,
+          `inputVolume: ${val(p.inputVolume)}`,
+          `selfMute: ${val(p.selfMute)}`,
+          `selfDeaf: ${val(p.selfDeaf)}`
+        ].filter(Boolean).join("\n");
       }
       showToast(text, type = "info") {
         try {
@@ -1173,6 +1267,67 @@ var require_actions = __commonJS({
   }
 });
 
+// src/lib/logger.js
+var require_logger = __commonJS({
+  "src/lib/logger.js"(exports2, module2) {
+    "use strict";
+    var LEVELS = ["debug", "info", "warn", "error"];
+    var DebugLog2 = class {
+      constructor({ limit = 300 } = {}) {
+        this.limit = Math.max(1, Number(limit) || 300);
+        this.entries = [];
+        this.seq = 0;
+        this.listeners = /* @__PURE__ */ new Set();
+      }
+      push(level, tag, message) {
+        const entry = {
+          level: LEVELS.includes(level) ? level : "info",
+          message: String(message ?? ""),
+          seq: this.seq + 1,
+          tag: String(tag ?? ""),
+          time: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        this.seq = entry.seq;
+        this.entries.push(entry);
+        while (this.entries.length > this.limit) this.entries.shift();
+        for (const fn of [...this.listeners]) {
+          try {
+            fn(entry);
+          } catch {
+          }
+        }
+        return entry;
+      }
+      debug(tag, message) {
+        return this.push("debug", tag, message);
+      }
+      info(tag, message) {
+        return this.push("info", tag, message);
+      }
+      warn(tag, message) {
+        return this.push("warn", tag, message);
+      }
+      error(tag, message) {
+        return this.push("error", tag, message);
+      }
+      getEntries() {
+        return [...this.entries];
+      }
+      clear() {
+        this.entries = [];
+      }
+      toText(limit = 120) {
+        return this.entries.slice(-Math.max(1, limit)).map((e) => `[${e.time}] ${e.level.toUpperCase()} ${e.tag}: ${e.message}`).join("\n");
+      }
+      subscribe(fn) {
+        this.listeners.add(fn);
+        return () => this.listeners.delete(fn);
+      }
+    };
+    module2.exports = { DebugLog: DebugLog2 };
+  }
+});
+
 // src/lib/store.js
 var require_store = __commonJS({
   "src/lib/store.js"(exports2, module2) {
@@ -1183,6 +1338,7 @@ var require_store = __commonJS({
     var STATE_VERSION = 2;
     var MAX_KEYBIND_KEYS = 5;
     var DEFAULT_SETTINGS = {
+      debugLogging: true,
       defaultGlobal: false,
       defaultToast: true
     };
@@ -1222,6 +1378,7 @@ var require_store = __commonJS({
     function sanitizeSettings(settings) {
       const s = settings && typeof settings === "object" ? settings : {};
       return {
+        debugLogging: s.debugLogging === false ? false : DEFAULT_SETTINGS.debugLogging,
         defaultGlobal: s.defaultGlobal === true ? true : DEFAULT_SETTINGS.defaultGlobal,
         defaultToast: s.defaultToast === false ? false : DEFAULT_SETTINGS.defaultToast
       };
@@ -1374,17 +1531,28 @@ var require_SettingsPanel = __commonJS({
       return getActionDef(bind.type)?.label || bind.type || "Unknown action";
     }
     function SettingsPanel2(props) {
-      const { React, discord, initialBinds, onBinds, onRun, settings } = props;
+      const { React, diagnosticsText, discord, initialBinds, log, onBinds, onRun, onSettings, probe, settings } = props;
       const [binds, setBinds] = React.useState(initialBinds || []);
       const [recordingId, setRecordingId] = React.useState(null);
       const [recordedKeys, setRecordedKeys] = React.useState([]);
       const [ioText, setIoText] = React.useState("");
       const [notice, setNotice] = React.useState(null);
       const [lastResult, setLastResult] = React.useState(null);
+      const [status, setStatus] = React.useState(() => safeProbe());
+      const [logTick, setLogTick] = React.useState(0);
+      const [debugOn, setDebugOn] = React.useState(settings?.debugLogging !== false);
       const pressedRef = React.useRef(/* @__PURE__ */ new Set());
       const collectedRef = React.useRef([]);
       const bindsRef = React.useRef(binds);
+      const logPreRef = React.useRef(null);
       bindsRef.current = binds;
+      function safeProbe() {
+        try {
+          return probe?.() || null;
+        } catch {
+          return null;
+        }
+      }
       const conflicts = React.useMemo(() => detectConflicts(binds), [binds]);
       const globalSupported = React.useMemo(() => {
         try {
@@ -1515,6 +1683,45 @@ var require_SettingsPanel = __commonJS({
         commit([]);
         say("info", "All binds deleted.");
       }
+      function copyDiagnostics() {
+        let text = "";
+        try {
+          text = `${diagnosticsText?.() || ""}
+
+--- log ---
+${log?.toText(150) || "(no log)"}`;
+        } catch (error) {
+          say("error", error?.message || String(error));
+          return;
+        }
+        const done = (ok) => say(ok ? "info" : "warning", ok ? "Diagnostics copied." : "Copy failed; select manually.");
+        try {
+          if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+          else {
+            setIoText(text);
+            done(false);
+          }
+        } catch {
+          setIoText(text);
+          done(false);
+        }
+      }
+      function toggleDebug(checked) {
+        setDebugOn(checked);
+        try {
+          onSettings?.({ ...settings, debugLogging: checked });
+        } catch {
+        }
+      }
+      React.useEffect(() => {
+        if (!log?.subscribe) return void 0;
+        const unsub = log.subscribe(() => setLogTick((t) => t + 1));
+        return unsub;
+      }, [log]);
+      React.useEffect(() => {
+        const el = logPreRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      }, [logTick]);
       const s = {
         badge: (on) => ({
           background: on ? "#248046" : "#4e5058",
@@ -1595,6 +1802,21 @@ var require_SettingsPanel = __commonJS({
           whiteSpace: "nowrap"
         }),
         label: { color: "var(--text-muted, #949ba4)", fontSize: 11, fontWeight: 600 },
+        logPre: {
+          background: "var(--background-tertiary, #1e1f22)",
+          border: "1px solid var(--background-modifier-accent, #3f4248)",
+          borderRadius: 6,
+          boxSizing: "border-box",
+          color: "var(--text-normal, #dbdee1)",
+          fontFamily: "monospace",
+          fontSize: 11,
+          marginTop: 6,
+          maxHeight: 180,
+          overflowY: "auto",
+          padding: 8,
+          whiteSpace: "pre-wrap",
+          width: "100%"
+        },
         notice: (kind) => ({
           background: kind === "error" ? "#a12829" : kind === "warning" ? "#7a5c00" : "#2c5f8a",
           borderRadius: 6,
@@ -1614,7 +1836,17 @@ var require_SettingsPanel = __commonJS({
         }),
         root: { color: "var(--text-normal, #dbdee1)", fontSize: 13, padding: "4px 4px 16px" },
         row: { alignItems: "center", display: "flex", flexWrap: "wrap", gap: 8 },
+        sectionTitle: { fontSize: 13, fontWeight: 700, margin: "14px 0 4px" },
         small: { color: "var(--text-muted, #949ba4)", fontSize: 11 },
+        statusDot: (ok) => ({
+          background: ok ? "#248046" : "#a12829",
+          borderRadius: "50%",
+          display: "inline-block",
+          height: 8,
+          marginRight: 6,
+          width: 8
+        }),
+        statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
         title: { fontSize: 16, fontWeight: 700, margin: 0 },
         toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
       };
@@ -1704,7 +1936,13 @@ var require_SettingsPanel = __commonJS({
           style: { ...s.input, marginTop: 4, width: "100%" },
           value: ioText
         }
-      ), /* @__PURE__ */ React.createElement("div", { style: s.small }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.")));
+      ), /* @__PURE__ */ React.createElement("div", { style: s.small }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.")), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+        try {
+          log?.clear();
+        } catch {
+        }
+        setLogTick((t) => t + 1);
+      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
     }
     module2.exports = SettingsPanel2;
   }
@@ -1714,6 +1952,7 @@ var require_SettingsPanel = __commonJS({
 var { DiscordBridge } = require_discord();
 var { BindEngine } = require_registrations();
 var { actionTypes, runBind } = require_actions();
+var { DebugLog } = require_logger();
 var { loadState, saveState } = require_store();
 var SettingsPanel = require_SettingsPanel();
 module.exports = class BetterKeybinds {
@@ -1722,13 +1961,24 @@ module.exports = class BetterKeybinds {
     this.state = null;
     this.discord = null;
     this.engine = null;
+    this.log = new DebugLog({ limit: 300 });
   }
-  log(...args) {
+  mirrorToConsole(entry) {
+    if (entry.level === "debug" && !this.state?.settings?.debugLogging) return;
+    const text = `[BetterKeybinds] ${entry.tag}: ${entry.message}`;
     try {
-      if (globalThis.BdApi?.Logger?.info) globalThis.BdApi.Logger.info("BetterKeybinds", ...args);
-      else console.log("[BetterKeybinds]", ...args);
+      const Logger = globalThis.BdApi?.Logger;
+      const fn = Logger && typeof Logger[entry.level] === "function" ? Logger[entry.level] : null;
+      if (fn) fn.call(Logger, text);
+      else console.log(text);
     } catch {
-      console.log("[BetterKeybinds]", ...args);
+      console.log(text);
+    }
+  }
+  logProbeSummary(context) {
+    try {
+      this.log.info("probe", `${context}: ${this.discord.probeSummary()}`);
+    } catch {
     }
   }
   start() {
@@ -1737,7 +1987,8 @@ module.exports = class BetterKeybinds {
       console.error("[BetterKeybinds] BdApi unavailable.");
       return;
     }
-    this.discord = new DiscordBridge(BdApi);
+    this.discord = new DiscordBridge(BdApi, this.log);
+    this.log.subscribe((entry) => this.mirrorToConsole(entry));
     const pluginName = this.meta?.name || "BetterKeybinds";
     const { fresh, state } = loadState(BdApi, pluginName, actionTypes());
     this.state = state;
@@ -1763,12 +2014,14 @@ module.exports = class BetterKeybinds {
         try {
           this.discord?.refresh();
           this.engine?.refresh();
+          this.logProbeSummary("idle-refresh");
         } catch {
         }
       });
     } catch {
     }
-    this.log(`started (${enabled}/${state.binds.length} binds active)`);
+    this.logProbeSummary("startup");
+    this.log.info("plugin", `started (${enabled}/${state.binds.length} binds active)`);
   }
   stop() {
     try {
@@ -1780,13 +2033,20 @@ module.exports = class BetterKeybinds {
       if (globalThis.BetterKeybinds === this) delete globalThis.BetterKeybinds;
     } catch {
     }
-    this.log("stopped");
+    try {
+      this.log.info("plugin", "stopped");
+    } catch {
+    }
   }
   async runBindById(id, source = "manual") {
     const bind = this.state?.binds.find((b) => b.id === id);
     if (!bind) return { message: "Bind not found.", ok: false };
     if (!bind.enabled) return { message: "Bind is disabled.", ok: false };
     const res = await runBind(bind, { discord: this.discord });
+    try {
+      this.log[res.ok ? "info" : "warn"]("run", `${bind.type} via ${source}: ${res.message || (res.ok ? "OK" : "failed")}`);
+    } catch {
+    }
     if (!res.ok || bind.toastOnRun) {
       this.discord?.showToast(
         res.ok ? `${res.message || "OK"} (${source})` : res.message || "Bind failed",
@@ -1822,10 +2082,14 @@ module.exports = class BetterKeybinds {
       return "<div style='padding:16px'>BetterKeybinds: settings unavailable (BdApi.React missing).</div>";
     }
     return React.createElement(SettingsPanel, {
+      diagnosticsText: () => this.discord.diagnosticsText(`BetterKeybinds diagnostics (v${this.meta?.version || "?"})`),
       discord: this.discord,
       initialBinds: this.state.binds,
+      log: this.log,
       onBinds: (binds) => this.updateBinds(binds),
       onRun: (id) => this.runBindById(id, "manual"),
+      onSettings: (settings) => this.updateSettings(settings),
+      probe: () => this.discord.probe(),
       React,
       settings: this.state.settings
     });
