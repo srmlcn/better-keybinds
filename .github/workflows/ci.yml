@@ -19,5 +19,5 @@ jobs:
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
-          name: KeybindMacros-plugin
-          path: dist/KeybindMacros.plugin.js
+          name: BetterKeybinds-plugin
+          path: dist/BetterKeybinds.plugin.js
