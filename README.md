@@ -42,6 +42,8 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 
 ## Volume and the Discord settings slider
 
+Binds use Discord's **slider percent** (what Voice & Video shows), not the raw store number. Discord's UI is perceptual (50 dB below 100%, 6 dB boost above). The audio engine stores linear amplitude, so 40 on the store is about 84% on the slider. The plugin converts both ways so "set 50" lands on 50% in Discord.
+
 Every volume write is verified by reading the value back from Discord's own audio store, and the toast reports ground truth. Writes use Discord's own voice-action setters first, then Flux, then the store directly:
 
 - `Speaker volume 50% → 100%` — applied and confirmed.

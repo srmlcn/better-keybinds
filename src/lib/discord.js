@@ -1,6 +1,7 @@
 "use strict";
 
 const { extractKeycodeMap } = require("./keybinds");
+const { amplitudeToPerceptual, perceptualToAmplitude, roundVolume } = require("./volume");
 
 // Lazy, fault-tolerant access to Discord's internal webpack modules.
 // Every getter returns null (never throws) so Discord client updates
@@ -379,105 +380,129 @@ class DiscordBridge {
     return Math.min(100, Math.max(0, Math.round(n)));
   }
 
-  getOutputVolume() {
+  // Prefer Discord's own converters when present; otherwise the documented
+  // 50 dB / 6 dB PerceptualVolumeUtils curve.
+  getVolumeConverter() {
+    return this.cached("volumeCurve", () => (
+      this.findByProps("amplitudeToPerceptual", "perceptualToAmplitude")
+      || this.findModule((m) => typeof m?.amplitudeToPerceptual === "function" && typeof m?.perceptualToAmplitude === "function")
+    ));
+  }
+
+  toAmplitude(perceptual) {
     try {
-      const v = this.getMediaEngineStore()?.getOutputVolume?.();
+      const conv = this.getVolumeConverter();
+      if (conv && typeof conv.perceptualToAmplitude === "function") {
+        const v = conv.perceptualToAmplitude(perceptual, 100);
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+      }
+    } catch (error) {
+      this.debug(`perceptualToAmplitude threw: ${error?.message || error}`);
+    }
+    return perceptualToAmplitude(perceptual);
+  }
+
+  toPerceptual(amplitude) {
+    try {
+      const conv = this.getVolumeConverter();
+      if (conv && typeof conv.amplitudeToPerceptual === "function") {
+        const v = conv.amplitudeToPerceptual(amplitude, 100);
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+      }
+    } catch (error) {
+      this.debug(`amplitudeToPerceptual threw: ${error?.message || error}`);
+    }
+    return amplitudeToPerceptual(amplitude);
+  }
+
+  readRawVolume(getter) {
+    try {
+      const v = this.getMediaEngineStore()?.[getter]?.();
       return typeof v === "number" && Number.isFinite(v) ? v : null;
     } catch {
       return null;
     }
   }
 
+  getOutputVolumeRaw() {
+    return this.readRawVolume("getOutputVolume");
+  }
+
+  getInputVolumeRaw() {
+    return this.readRawVolume("getInputVolume");
+  }
+
+  getOutputVolume() {
+    const raw = this.getOutputVolumeRaw();
+    if (raw === null) return null;
+    return roundVolume(this.toPerceptual(raw));
+  }
+
   getInputVolume() {
+    const raw = this.getInputVolumeRaw();
+    if (raw === null) return null;
+    return roundVolume(this.toPerceptual(raw));
+  }
+
+  writeVolume(kind, perceptual) {
+    const v = DiscordBridge.clampVolume(perceptual);
+    if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
+    const amplitude = this.toAmplitude(v);
+    const before = kind === "input" ? this.getInputVolume() : this.getOutputVolume();
+    const setter = kind === "input" ? "setInputVolume" : "setOutputVolume";
+    const fluxType = kind === "input" ? "AUDIO_SET_INPUT_VOLUME" : "AUDIO_SET_OUTPUT_VOLUME";
+    const getterRaw = kind === "input" ? "getInputVolumeRaw" : "getOutputVolumeRaw";
+    let viaActions = false;
     try {
-      const v = this.getMediaEngineStore()?.getInputVolume?.();
-      return typeof v === "number" && Number.isFinite(v) ? v : null;
-    } catch {
-      return null;
+      const voice = this.getVoiceActions();
+      if (voice && typeof voice[setter] === "function") {
+        voice[setter](amplitude);
+        viaActions = true;
+      }
+    } catch (error) {
+      this.debug(`voice ${setter} threw: ${error?.message || error}`);
     }
+    const res = this.dispatch(fluxType, { volume: amplitude });
+    let direct = false;
+    try {
+      const store = this.getMediaEngineStore();
+      if (store && typeof store[setter] === "function") {
+        store[setter](amplitude);
+        direct = true;
+      }
+    } catch { /* actions/flux paths above are primary */ }
+    const label = kind === "input" ? "input" : "output";
+    const friendly = kind === "input" ? "Microphone volume" : "Speaker volume";
+    if (!viaActions && !res.ok && !direct) {
+      this.warn(`${label} volume: no write path available`);
+      return { ok: false, message: `Couldn't reach Discord's ${kind === "input" ? "microphone" : "speaker"} controls — Discord may have updated.` };
+    }
+    const via = [viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+");
+    if (this[getterRaw]() === null) {
+      if (kind === "input") this.lastSetInputVolume = v;
+      else this.lastSetOutputVolume = v;
+      const out = { ok: true, message: `${friendly} → ${v}%` };
+      this.info(`${label} volume ${before ?? "?"} -> ${v} amp ${amplitude.toFixed(3)} via ${via} (unreadable, tracking): ${out.message}`);
+      return out;
+    }
+    const out = this.verifyVolume(kind === "input" ? "Input" : "Output", before, v);
+    if (out.ok) {
+      if (kind === "input") this.lastSetInputVolume = v;
+      else this.lastSetOutputVolume = v;
+    }
+    this.info(`${label} volume ${before ?? "?"} -> ${v} amp ${amplitude.toFixed(3)} via ${via}: ${out.message}`);
+    return out;
   }
 
   // Writes go through Flux (what Discord's own UI uses) plus a direct store
   // call, then read back the value so toasts report ground truth instead of
-  // assuming the write landed.
+  // assuming the write landed. Values are slider percents; the store is amplitude.
   setOutputVolume(value) {
-    const v = DiscordBridge.clampVolume(value);
-    if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
-    const before = this.getOutputVolume();
-    let viaActions = false;
-    try {
-      const voice = this.getVoiceActions();
-      if (voice && typeof voice.setOutputVolume === "function") {
-        voice.setOutputVolume(v);
-        viaActions = true;
-      }
-    } catch (error) {
-      this.debug(`voice setOutputVolume threw: ${error?.message || error}`);
-    }
-    const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
-    let direct = false;
-    try {
-      const store = this.getMediaEngineStore();
-      if (store && typeof store.setOutputVolume === "function") {
-        store.setOutputVolume(v);
-        direct = true;
-      }
-    } catch { /* actions/flux paths above are primary */ }
-    if (!viaActions && !res.ok && !direct) {
-      this.warn("output volume: no write path available");
-      return { ok: false, message: "Couldn't reach Discord's speaker controls — Discord may have updated." };
-    }
-    const via = [viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+");
-    if (this.getOutputVolume() === null) {
-      this.lastSetOutputVolume = v;
-      const out = { ok: true, message: `Speaker volume → ${v}%` };
-      this.info(`output volume ${before ?? "?"} -> ${v} via ${via} (unreadable, tracking): ${out.message}`);
-      return out;
-    }
-    const out = this.verifyVolume("Output", before, v);
-    if (out.ok) this.lastSetOutputVolume = v;
-    this.info(`output volume ${before ?? "?"} -> ${v} via ${via}: ${out.message}`);
-    return out;
+    return this.writeVolume("output", value);
   }
 
   setInputVolume(value) {
-    const v = DiscordBridge.clampVolume(value);
-    if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
-    const before = this.getInputVolume();
-    let viaActions = false;
-    try {
-      const voice = this.getVoiceActions();
-      if (voice && typeof voice.setInputVolume === "function") {
-        voice.setInputVolume(v);
-        viaActions = true;
-      }
-    } catch (error) {
-      this.debug(`voice setInputVolume threw: ${error?.message || error}`);
-    }
-    const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
-    let direct = false;
-    try {
-      const store = this.getMediaEngineStore();
-      if (store && typeof store.setInputVolume === "function") {
-        store.setInputVolume(v);
-        direct = true;
-      }
-    } catch { /* actions/flux paths above are primary */ }
-    if (!viaActions && !res.ok && !direct) {
-      this.warn("input volume: no write path available");
-      return { ok: false, message: "Couldn't reach Discord's microphone controls — Discord may have updated." };
-    }
-    const via = [viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+");
-    if (this.getInputVolume() === null) {
-      this.lastSetInputVolume = v;
-      const out = { ok: true, message: `Microphone volume → ${v}%` };
-      this.info(`input volume ${before ?? "?"} -> ${v} via ${via} (unreadable, tracking): ${out.message}`);
-      return out;
-    }
-    const out = this.verifyVolume("Input", before, v);
-    if (out.ok) this.lastSetInputVolume = v;
-    this.info(`input volume ${before ?? "?"} -> ${v} via ${via}: ${out.message}`);
-    return out;
+    return this.writeVolume("input", value);
   }
 
   // Live reading with last-set fallback for toggle/adjust when Discord's
@@ -1419,6 +1444,7 @@ class DiscordBridge {
       channelRouter: Boolean(this.getChannelRouter()),
       discordUtils: this.hasGlobalSupport(),
       flux: Boolean(this.getFlux()),
+      inputAmplitude: this.getInputVolumeRaw(),
       inputTracked: this.lastSetInputVolume,
       inputVolume: this.getInputVolume(),
       keycodeMap: Boolean(this.getKeycodeMap()),
@@ -1429,6 +1455,7 @@ class DiscordBridge {
         : [],
       messageActions: Boolean(this.getMessageActions()),
       nativeModules: this.inspectNativeModules(),
+      outputAmplitude: this.getOutputVolumeRaw(),
       outputTracked: this.lastSetOutputVolume,
       outputVolume: this.getOutputVolume(),
       platform: this.getPlatform(),
@@ -1499,9 +1526,9 @@ class DiscordBridge {
       `fluxSubAudioTypes(${p.audioPath?.fluxSubTotalTypes ?? "?"} total): ${(p.audioPath?.fluxSubAudioTypes || []).join(", ") || "none"}`,
       `fluxSubSample: ${(p.audioPath?.fluxSubSample || []).join(", ") || "none"}`,
       `setterSource(setOutputVolume): ${p.audioPath?.sources?.setOutputVolume || "n/a"}`,
-      `outputVolume: ${val(p.outputVolume)}`,
+      `outputVolume: ${val(p.outputVolume)} (amplitude ${val(p.outputAmplitude)})`,
       `outputTracked: ${p.outputTracked ?? "none"}`,
-      `inputVolume: ${val(p.inputVolume)}`,
+      `inputVolume: ${val(p.inputVolume)} (amplitude ${val(p.inputAmplitude)})`,
       `inputTracked: ${p.inputTracked ?? "none"}`,
       `selfMute: ${val(p.selfMute)}`,
       `selfDeaf: ${val(p.selfDeaf)}`,

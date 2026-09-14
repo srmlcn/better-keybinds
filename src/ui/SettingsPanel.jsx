@@ -591,8 +591,8 @@ function SettingsPanel(props) {
           <span><span style={s.statusDot(status.keycodeMap)} />Keymap</span>
           <span><span style={s.statusDot(status.streaming?.ready)} />Stream</span>
           <span style={s.small}>platform: {status.platform}</span>
-          <span style={s.small}>out: {status.outputVolume ?? (status.outputTracked ?? "?")}{status.outputVolume == null && status.outputTracked != null ? "~" : ""}</span>
-          <span style={s.small}>in: {status.inputVolume ?? (status.inputTracked ?? "?")}{status.inputVolume == null && status.inputTracked != null ? "~" : ""}</span>
+          <span style={s.small}>out: {status.outputVolume ?? (status.outputTracked ?? "?")}{status.outputVolume == null && status.outputTracked != null ? "~" : ""}{status.outputAmplitude != null ? ` amp ${Math.round(status.outputAmplitude * 10) / 10}` : ""}</span>
+          <span style={s.small}>in: {status.inputVolume ?? (status.inputTracked ?? "?")}{status.inputVolume == null && status.inputTracked != null ? "~" : ""}{status.inputAmplitude != null ? ` amp ${Math.round(status.inputAmplitude * 10) / 10}` : ""}</span>
           <span style={s.small}>mute: {String(status.selfMute ?? "?")}</span>
           <span style={s.small}>deaf: {String(status.selfDeaf ?? "?")}</span>
           <span style={s.small}>live: {status.streaming?.selfStream ? "yes" : "no"}</span>

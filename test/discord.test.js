@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { DiscordBridge } = require("../src/lib/discord");
+const { perceptualToAmplitude } = require("../src/lib/volume");
 
 describe("DiscordBridge without BdApi modules", () => {
   it("degrades to nulls and error results, never throws", () => {
@@ -76,18 +77,25 @@ function stubbed({ stuck = false, readable = true, voiceThrows = false } = {}) {
 describe("DiscordBridge with stubbed modules", () => {
   it("writes actions-first and verifies by read-back", () => {
     const { calls, d, dispatched } = stubbed();
-    assert.equal(d.getOutputVolume(), 55);
+    assert.equal(d.getOutputVolume(), 90);
+    assert.equal(d.getOutputVolumeRaw(), 55);
     const res = d.setOutputVolume(75);
+    const amp75 = perceptualToAmplitude(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /55% → 75%/);
-    assert.deepEqual(calls, [["actions-out", 75], ["out", 75]]);
-    assert.deepEqual(dispatched, [{ type: "AUDIO_SET_OUTPUT_VOLUME", volume: 75 }]);
+    assert.match(res.message, /90% → 75%/);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0][0], "actions-out");
+    assert.ok(Math.abs(calls[0][1] - amp75) < 1e-9);
+    assert.equal(calls[1][0], "out");
+    assert.ok(Math.abs(calls[1][1] - amp75) < 1e-9);
+    assert.equal(dispatched[0].type, "AUDIO_SET_OUTPUT_VOLUME");
+    assert.ok(Math.abs(dispatched[0].volume - amp75) < 1e-9);
   });
   it("reports stuck volume when read-back disagrees", () => {
     const { d } = stubbed({ stuck: true });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, false);
-    assert.match(res.message, /didn't change — still 55%/);
+    assert.match(res.message, /didn't change — still 90%/);
   });
   it("tracks the set value when volume is unreadable", () => {
     const { d } = stubbed({ readable: false });
@@ -116,14 +124,16 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(p.voiceActions, true);
     assert.equal(p.audioPath.setters.setOutputVolume, true);
     assert.equal(p.audioPath.hasOutputVolumeHandler, null);
-    assert.equal(p.outputVolume, 55);
-    assert.equal(p.inputVolume, 80);
+    assert.equal(p.outputVolume, 90);
+    assert.equal(p.outputAmplitude, 55);
+    assert.equal(p.inputVolume, 96);
+    assert.equal(p.inputAmplitude, 80);
     assert.equal(p.selfMute, true);
     assert.equal(p.selfDeaf, false);
     assert.equal(p.outputTracked, null);
     assert.equal(p.inputTracked, null);
     assert.match(d.probeSummary(), /flux:ok media:ok/);
-    assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 55/);
+    assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 90 \(amplitude 55\)/);
   });
   it("probes empty without modules", () => {
     const d = new DiscordBridge({});
@@ -139,7 +149,7 @@ describe("DiscordBridge with stubbed modules", () => {
     const logged = [];
     d.log = { debug: (t, m) => logged.push(["debug", m]), info: (t, m) => logged.push(["info", m]), warn: (t, m) => logged.push(["warn", m]) };
     d.setOutputVolume(75);
-    assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 55 -> 75")));
+    assert.ok(logged.some(([l, m]) => l === "info" && m.includes("output volume 90 -> 75")));
     assert.ok(logged.some(([l, m]) => l === "debug" && m.includes("AUDIO_SET_OUTPUT_VOLUME")));
   });
   it("fingerprints resolved modules", () => {
@@ -168,7 +178,7 @@ describe("DiscordBridge with stubbed modules", () => {
     const { d } = stubbed({ voiceThrows: true });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /55% → 75%/);
+    assert.match(res.message, /90% → 75%/);
   });
   it("fingerprints prototype methods", () => {
     const { d } = stubbed();
@@ -221,6 +231,17 @@ describe("tracked volumes", () => {
     const { d } = stubbed();
     d.setOutputVolume(75);
     assert.deepEqual(d.resolveOutputVolume(), { tracked: false, value: 75 });
+  });
+  it("uses Discord's volume converter when webpack exposes it", () => {
+    const { d } = stubbed();
+    d.cache.set("volumeCurve", {
+      amplitudeToPerceptual: (amp) => amp * 2,
+      perceptualToAmplitude: (perc) => perc / 2
+    });
+    const calls = [];
+    d.getVoiceActions().setOutputVolume = (v) => calls.push(v);
+    d.setOutputVolume(80);
+    assert.equal(calls[0], 40);
   });
 });
 
@@ -379,7 +400,7 @@ describe("getStoreByName", () => {
       }
     });
     assert.equal(d.getMediaEngineStore(), named);
-    assert.equal(d.getOutputVolume(), 42);
+    assert.equal(d.getOutputVolumeRaw(), 42);
   });
   it("falls back to props when getStore is missing or throws", () => {
     const { d } = stubbed();
@@ -398,7 +419,7 @@ describe("getStoreByName", () => {
         getStore: () => { throw new Error("nope"); }
       }
     });
-    assert.equal(throwing.getOutputVolume(), 7);
+    assert.equal(throwing.getOutputVolumeRaw(), 7);
   });
 });
 
@@ -482,7 +503,7 @@ describe("current Webpack helpers", () => {
       }
     });
     assert.equal(d.getMediaEngineStore(), store);
-    assert.equal(d.getOutputVolume(), 40);
+    assert.equal(d.getOutputVolumeRaw(), 40);
   });
 });
 
