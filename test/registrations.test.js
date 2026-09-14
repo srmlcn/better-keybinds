@@ -80,7 +80,7 @@ describe("global refresh without native support", () => {
     assert.equal(engine.globalStatus.supported, false);
     assert.equal(engine.globalStatus.registered, 0);
     assert.equal(notes.length, 1);
-    assert.match(notes[0][0], /in-app only/);
+    assert.match(notes[0][0], /while Discord is focused/);
   });
   it("registers chords through discord_utils when available", () => {
     const registered = new Map();

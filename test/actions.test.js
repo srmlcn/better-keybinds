@@ -63,11 +63,11 @@ function fakeDiscord(overrides = {}) {
 describe("runAction", () => {
   it("toggles output volume via bridge", async () => {
     let got = null;
-    const discord = fakeDiscord({ setOutputVolume: (v) => { got = v; return { message: `Output volume 50% -> ${v}%`, ok: true }; } });
+    const discord = fakeDiscord({ setOutputVolume: (v) => { got = v; return { message: `Speaker volume 50% → ${v}%`, ok: true }; } });
     const res = await a.runAction("output.toggle", { a: 50, b: 100 }, { discord });
     assert.equal(res.ok, true);
     assert.equal(got, 100);
-    assert.match(res.message, /50% -> 100%/);
+    assert.match(res.message, /50% → 100%/);
   });
   it("adjusts relative to current", async () => {
     let got = null;

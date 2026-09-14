@@ -66,7 +66,7 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(d.getOutputVolume(), 55);
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /55% -> 75%/);
+    assert.match(res.message, /55% → 75%/);
     assert.deepEqual(calls, [["out", 75]]);
     assert.deepEqual(dispatched, [{ type: "AUDIO_SET_OUTPUT_VOLUME", volume: 75 }]);
   });
@@ -74,18 +74,23 @@ describe("DiscordBridge with stubbed modules", () => {
     const { d } = stubbed({ stuck: true });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, false);
-    assert.match(res.message, /stuck at 55% \(wanted 75%\)/);
+    assert.match(res.message, /didn't change — still 55%/);
   });
   it("reports unverified when volume is unreadable", () => {
     const { d } = stubbed({ readable: false });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /unverified/);
+    assert.match(res.message, /couldn't confirm/);
   });
   it("short-circuits redundant mute state", () => {
     const { d, dispatched } = stubbed();
     assert.equal(d.setSelfMute(true).message, "Already muted");
     assert.deepEqual(dispatched, []);
+  });
+  it("reports resulting mute state after toggle", () => {
+    const { d } = stubbed();
+    assert.equal(d.toggleSelfMute().message, "Muted");
+    assert.equal(d.toggleSelfDeaf().message, "Undeafened");
   });
   it("probes module status and volumes", () => {
     const { d } = stubbed();
