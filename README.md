@@ -43,15 +43,15 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 
 Every volume write is verified by reading the value back from Discord's own audio store, and the toast reports ground truth:
 
-- `Output volume 50% -> 100%` — applied and confirmed.
-- `Output volume stuck at 50% (wanted 100%)` — Discord rejected or ignored the write; the bind genuinely did not work.
-- `... (unverified)` — write sent but the value couldn't be read back.
+- `Speaker volume 50% → 100%` — applied and confirmed.
+- `Speaker volume didn't change — still 50%` — Discord rejected or ignored the write; the bind genuinely did not work.
+- `... (couldn't confirm)` — write sent but the value couldn't be read back.
 
 Discord's Settings → Voice & Video slider does not always repaint while open; close and reopen Settings to see the new position. The toast value is authoritative, not the slider.
 
 ## Import / export
 
-Settings bottom box: **Export** dumps JSON, paste JSON then **Import (append/replace)**. Unknown future action types are preserved with a warning.
+Under the **Import / export / reset** dropdown in settings: **Export** dumps JSON, paste JSON then **Import (append/replace)**. Unknown future action types are preserved with a warning.
 
 ## Development
 
@@ -81,8 +81,8 @@ If volume "doesn't change", check in order: toast message (success/stuck/unavail
 
 ## Troubleshooting
 
-- **"Stuck at X%" toast**: Discord ignored the write. Try reopening Discord; if it persists after a Discord update, the audio internals likely moved and the bridge needs an update.
-- **"Module unavailable" toast**: Discord renamed internals. Check console (`Ctrl+Shift+I`) for `[BetterKeybinds]` lines.
+- **"Didn't change" toast**: Discord ignored the write. Try reopening Discord; if it persists after a Discord update, the audio internals likely moved and the bridge needs an update.
+- **"Couldn't reach" toast**: Discord renamed internals. Check console (`Ctrl+Shift+I`) for `[BetterKeybinds]` lines.
 - **Global shows In-app only**: native module blocked or unsupported client — in-app still works. Re-check after Discord restart.
 - **Global chord does nothing on Linux/Mac**: platform keycodes come from Discord's key map with a Windows fallback; unresolvable keys are reported.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
