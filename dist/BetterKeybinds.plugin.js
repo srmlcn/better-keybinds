@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.4.0
+ * @version 2.4.1
  * @runAt idle
  */
 "use strict";
@@ -397,7 +397,8 @@ var require_discord = __commonJS({
         try {
           const byStrings = BdApi?.Webpack?.Filters?.byStrings;
           if (byStrings && BdApi?.Webpack?.getModule) {
-            return BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+            const hit = BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+            if (hit) return hit;
           }
         } catch (error) {
           this.warn(`byStrings threw: ${error?.message || error}`);
@@ -571,6 +572,7 @@ var require_discord = __commonJS({
           this.warn("output volume: no write path available");
           return { ok: false, message: "Couldn't reach Discord's speaker controls \u2014 Discord may have updated." };
         }
+        if (!this.getMediaEngineStore()) return this.unloadedVoice("output");
         const out = this.verifyVolume("Output", before, v);
         this.info(`output volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
         return out;
@@ -603,9 +605,18 @@ var require_discord = __commonJS({
           this.warn("input volume: no write path available");
           return { ok: false, message: "Couldn't reach Discord's microphone controls \u2014 Discord may have updated." };
         }
+        if (!this.getMediaEngineStore()) return this.unloadedVoice("input");
         const out = this.verifyVolume("Input", before, v);
         this.info(`input volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
         return out;
+      }
+      // Discord loads voice code on demand. Without the store there is no
+      // handler for volume events and nothing to verify against, so a write
+      // now is almost certainly a no-op: say so instead of "couldn't confirm".
+      unloadedVoice(which) {
+        const message = "Discord's voice controls aren't loaded yet \u2014 join a voice channel or open Voice & Video settings, then try again.";
+        this.warn(`${which} volume: voice chunk unloaded`);
+        return { ok: false, message };
       }
       verifyVolume(label, before, wanted) {
         const friendly = label === "Input" ? "Microphone volume" : "Speaker volume";
@@ -2115,7 +2126,7 @@ ${log?.toText(150) || "(no log)"}`;
         } catch {
         }
         setLogTick((t) => t + 1);
-      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.audioActions) }), "AudioActions"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(Boolean(status.audioPath?.setters?.setOutputVolume)) }), "VSet"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
+      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.audioActions) }), "AudioActions"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(Boolean(status.audioPath?.setters?.setOutputVolume)) }), "VSet"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), status && !status.mediaEngine ? /* @__PURE__ */ React.createElement("div", { style: s.small }, "Voice controls aren't loaded \u2014 join a voice channel or open Voice & Video settings, then Refresh status.") : null, /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
     }
     module2.exports = SettingsPanel2;
   }
