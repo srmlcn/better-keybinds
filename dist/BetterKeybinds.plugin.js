@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.1.0
+ * @version 2.2.0
  * @runAt idle
  */
 "use strict";
@@ -436,7 +436,7 @@ var require_discord = __commonJS({
         const flux = this.getFlux();
         if (!flux || typeof flux.dispatch !== "function") {
           this.warn(`dispatch ${type} failed: flux unavailable`);
-          return { ok: false, message: "Flux dispatcher unavailable (Discord update?)." };
+          return { ok: false, message: "Couldn't reach Discord's controls \u2014 Discord may have updated." };
         }
         try {
           flux.dispatch({ type, ...payload });
@@ -473,7 +473,7 @@ var require_discord = __commonJS({
       // assuming the write landed.
       setOutputVolume(value) {
         const v = _DiscordBridge.clampVolume(value);
-        if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
+        if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
         const before = this.getOutputVolume();
         const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
         let direct = false;
@@ -487,7 +487,7 @@ var require_discord = __commonJS({
         }
         if (!res.ok && !direct) {
           this.warn("output volume: no write path available");
-          return { ok: false, message: "Output volume module unavailable (Discord update?)." };
+          return { ok: false, message: "Couldn't reach Discord's speaker controls \u2014 Discord may have updated." };
         }
         const out = this.verifyVolume("Output", before, v);
         this.info(`output volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
@@ -495,7 +495,7 @@ var require_discord = __commonJS({
       }
       setInputVolume(value) {
         const v = _DiscordBridge.clampVolume(value);
-        if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
+        if (v === null) return { ok: false, message: "Volume must be between 0 and 100." };
         const before = this.getInputVolume();
         const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
         let direct = false;
@@ -509,20 +509,21 @@ var require_discord = __commonJS({
         }
         if (!res.ok && !direct) {
           this.warn("input volume: no write path available");
-          return { ok: false, message: "Input volume module unavailable (Discord update?)." };
+          return { ok: false, message: "Couldn't reach Discord's microphone controls \u2014 Discord may have updated." };
         }
         const out = this.verifyVolume("Input", before, v);
         this.info(`input volume ${before ?? "?"} -> ${v} via ${[res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
         return out;
       }
       verifyVolume(label, before, wanted) {
+        const friendly = label === "Input" ? "Microphone volume" : "Speaker volume";
         const after = label === "Input" ? this.getInputVolume() : this.getOutputVolume();
-        if (after === null) return { ok: true, message: `${label} volume -> ${wanted}% (unverified)` };
+        if (after === null) return { ok: true, message: `${friendly} \u2192 ${wanted}% (couldn't confirm)` };
         if (Math.abs(after - wanted) > 1) {
-          return { ok: false, message: `${label} volume stuck at ${Math.round(after)}% (wanted ${wanted}%)` };
+          return { ok: false, message: `${friendly} didn't change \u2014 still ${Math.round(after)}%` };
         }
         const from = before === null ? "?" : `${Math.round(before)}%`;
-        return { ok: true, message: `${label} volume ${from} -> ${wanted}%` };
+        return { ok: true, message: `${friendly} ${from} \u2192 ${wanted}%` };
       }
       readFlag(candidates) {
         const store = this.getMediaEngineStore();
@@ -545,28 +546,40 @@ var require_discord = __commonJS({
         return this.readFlag(["isSelfDeaf", "isSelfDeafened", "isDeafened"]);
       }
       toggleSelfMute() {
+        const done = () => {
+          const state = this.isSelfMute();
+          if (state === true) return { ok: true, message: "Muted" };
+          if (state === false) return { ok: true, message: "Unmuted" };
+          return { ok: true, message: "Mute toggled" };
+        };
         try {
           const voice = this.getVoiceActions();
           if (voice && typeof voice.toggleSelfMute === "function") {
             voice.toggleSelfMute();
-            return { ok: true, message: "Toggled mute" };
+            return done();
           }
         } catch {
         }
         const res = this.dispatch("AUDIO_TOGGLE_SELF_MUTE", { context: "default", syncRemote: true });
-        return res.ok ? { ok: true, message: "Toggled mute" } : res;
+        return res.ok ? done() : res;
       }
       toggleSelfDeaf() {
+        const done = () => {
+          const state = this.isSelfDeaf();
+          if (state === true) return { ok: true, message: "Deafened" };
+          if (state === false) return { ok: true, message: "Undeafened" };
+          return { ok: true, message: "Deafen toggled" };
+        };
         try {
           const voice = this.getVoiceActions();
           if (voice && typeof voice.toggleSelfDeaf === "function") {
             voice.toggleSelfDeaf();
-            return { ok: true, message: "Toggled deafen" };
+            return done();
           }
         } catch {
         }
         const res = this.dispatch("AUDIO_TOGGLE_SELF_DEAF", { context: "default", syncRemote: true });
-        return res.ok ? { ok: true, message: "Toggled deafen" } : res;
+        return res.ok ? done() : res;
       }
       setSelfMute(muted) {
         const state = this.isSelfMute();
@@ -600,19 +613,19 @@ var require_discord = __commonJS({
       }
       disconnectVoice() {
         const res = this.dispatch("VOICE_CHANNEL_SELECT", { channelId: null });
-        if (res.ok) return { ok: true, message: "Disconnected from voice" };
+        if (res.ok) return { ok: true, message: "Left the voice channel" };
         try {
           const actions = this.getChannelActions();
           if (actions && typeof actions.selectVoiceChannel === "function") {
             actions.selectVoiceChannel(null);
-            return { ok: true, message: "Disconnected from voice" };
+            return { ok: true, message: "Left the voice channel" };
           }
         } catch {
         }
-        return res.ok ? res : { ok: false, message: res.message || "Voice disconnect unavailable." };
+        return res.ok ? res : { ok: false, message: res.message || "Couldn't leave the voice channel." };
       }
       goToChannel(guildId, channelId) {
-        if (!guildId || !channelId) return { ok: false, message: "Guild ID and channel ID are required." };
+        if (!guildId || !channelId) return { ok: false, message: "This keybind needs a server and channel ID." };
         const res = this.dispatch("CHANNEL_SELECT", { channelId: String(channelId), guildId: String(guildId) });
         if (res.ok) return { ok: true, message: "Switched channel" };
         try {
@@ -630,7 +643,7 @@ var require_discord = __commonJS({
         } catch (error) {
           return { ok: false, message: error?.message || String(error) };
         }
-        return { ok: false, message: res.message || "Channel switch unavailable." };
+        return { ok: false, message: "Couldn't switch channels." };
       }
       getCurrentTextChannelId() {
         try {
@@ -647,12 +660,12 @@ var require_discord = __commonJS({
         return null;
       }
       async sendMessage(channelId, content) {
-        if (!channelId) return { ok: false, message: "No channel selected." };
-        if (!content || !String(content).trim()) return { ok: false, message: "Message text is empty." };
-        if (String(content).length > 2e3) return { ok: false, message: "Message exceeds 2000 characters." };
+        if (!channelId) return { ok: false, message: "Couldn't send \u2014 no channel is open." };
+        if (!content || !String(content).trim()) return { ok: false, message: "Couldn't send \u2014 the message is empty." };
+        if (String(content).length > 2e3) return { ok: false, message: "Couldn't send \u2014 the message is over 2000 characters." };
         const actions = this.getMessageActions();
         if (!actions || typeof actions.sendMessage !== "function") {
-          return { ok: false, message: "Message module unavailable (Discord update?)." };
+          return { ok: false, message: "Couldn't reach Discord's messaging \u2014 Discord may have updated." };
         }
         try {
           const res = actions.sendMessage(String(channelId), { content: String(content) });
@@ -927,7 +940,7 @@ var require_registrations = __commonJS({
           return;
         }
         if (!supported) {
-          this.globalStatus.errors.push("DiscordNative global shortcuts unavailable; global binds work in-app only.");
+          this.globalStatus.errors.push("Global shortcuts aren't available \u2014 keybinds only work while Discord is focused.");
           this.notifyGlobalErrors();
           return;
         }
@@ -964,7 +977,7 @@ var require_registrations = __commonJS({
         this.lastGlobalErrorSig = sig;
         const first = this.globalStatus.errors[0];
         const extra = this.globalStatus.errors.length > 1 ? ` (+${this.globalStatus.errors.length - 1} more)` : "";
-        this.notify(`Global keybinds: ${first}${extra}`, "warning");
+        this.notify(`Global shortcuts: ${first}${extra}`, "warning");
       }
     };
     module2.exports = { BindEngine: BindEngine2, GLOBAL_ID_BASE, numericIdFor };
@@ -1181,31 +1194,31 @@ var require_actions = __commonJS({
     }
     async function runAction(type, params, ctx) {
       const def = getActionDef(type);
-      if (!def) return { message: `Unknown action: ${type}`, ok: false };
+      if (!def) return { message: `Sorry, this action isn't supported: ${type}`, ok: false };
       const { errors, values } = coerceParams(def, params || {});
       if (errors.length) return { message: errors[0], ok: false };
       const discord = ctx?.discord;
-      if (!discord && !type.startsWith("util.")) return { message: "Discord bridge unavailable.", ok: false };
+      if (!discord && !type.startsWith("util.")) return { message: "Couldn't reach Discord.", ok: false };
       try {
         switch (type) {
           case "output.set":
             return discord.setOutputVolume(values.volume);
           case "output.adjust": {
             const current = discord.getOutputVolume();
-            if (current === null) return { message: "Could not read current output volume.", ok: false };
+            if (current === null) return { message: "Couldn't read the current speaker volume.", ok: false };
             return discord.setOutputVolume(current + values.delta);
           }
           case "output.toggle": {
             const current = discord.getOutputVolume();
             const target = resolveToggle(current, values.a, values.b);
-            if (target === null) return { message: "Invalid toggle levels.", ok: false };
+            if (target === null) return { message: "This keybind's volume levels are invalid.", ok: false };
             return discord.setOutputVolume(target);
           }
           case "input.set":
             return discord.setInputVolume(values.volume);
           case "input.adjust": {
             const current = discord.getInputVolume();
-            if (current === null) return { message: "Could not read current input volume.", ok: false };
+            if (current === null) return { message: "Couldn't read the current microphone volume.", ok: false };
             return discord.setInputVolume(current + values.delta);
           }
           case "self.toggleMute":
@@ -1224,7 +1237,7 @@ var require_actions = __commonJS({
             const channelId = values.channelScope === "saved" ? String(values.channelId || "").trim() : discord.getCurrentTextChannelId();
             if (!channelId) {
               return {
-                message: values.channelScope === "saved" ? "Channel ID is required." : "No channel selected.",
+                message: values.channelScope === "saved" ? "This keybind needs a channel ID." : "Couldn't send \u2014 no channel is open.",
                 ok: false
               };
             }
@@ -1235,12 +1248,12 @@ var require_actions = __commonJS({
             return { message: "Toast shown", ok: true };
           case "util.openUrl": {
             const opener = globalThis.open;
-            if (typeof opener !== "function") return { message: "Cannot open URLs here.", ok: false };
+            if (typeof opener !== "function") return { message: "Couldn't open that link here.", ok: false };
             opener(values.url, "_blank", "noopener");
-            return { message: "URL opened", ok: true };
+            return { message: "Link opened", ok: true };
           }
           default:
-            return { message: `Unknown action: ${type}`, ok: false };
+            return { message: `Sorry, this action isn't supported: ${type}`, ok: false };
         }
       } catch (error) {
         return { message: `${def.label} failed: ${error?.message || error}`, ok: false };
@@ -1545,6 +1558,7 @@ var require_SettingsPanel = __commonJS({
       const collectedRef = React.useRef([]);
       const bindsRef = React.useRef(binds);
       const logPreRef = React.useRef(null);
+      const ioDetailsRef = React.useRef(null);
       bindsRef.current = binds;
       function safeProbe() {
         try {
@@ -1658,15 +1672,6 @@ var require_SettingsPanel = __commonJS({
         setIoText(exportState({ binds }));
         say("info", `Exported ${binds.length} bind(s). Copy the text below to back up or share.`);
       }
-      function doCopy() {
-        const done = () => say("info", "Copied to clipboard.");
-        try {
-          if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(ioText).then(done, done);
-          else say("warning", "Clipboard unavailable; select the text manually.");
-        } catch {
-          say("warning", "Clipboard unavailable; select the text manually.");
-        }
-      }
       function doImport(replace) {
         try {
           const { binds: imported, warnings } = importState(ioText, KNOWN_TYPES);
@@ -1694,16 +1699,19 @@ ${log?.toText(150) || "(no log)"}`;
           say("error", error?.message || String(error));
           return;
         }
-        const done = (ok) => say(ok ? "info" : "warning", ok ? "Diagnostics copied." : "Copy failed; select manually.");
-        try {
-          if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-          else {
-            setIoText(text);
-            done(false);
-          }
-        } catch {
+        const fallback = () => {
           setIoText(text);
-          done(false);
+          try {
+            if (ioDetailsRef.current) ioDetailsRef.current.open = true;
+          } catch {
+          }
+          say("warning", "Clipboard unavailable \u2014 diagnostics placed in the import/export box below.");
+        };
+        try {
+          if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => say("info", "Diagnostics copied."), fallback);
+          else fallback();
+        } catch {
+          fallback();
         }
       }
       function toggleDebug(checked) {
@@ -1778,6 +1786,13 @@ ${log?.toText(150) || "(no log)"}`;
           marginTop: 8,
           padding: "6px 10px"
         },
+        details: {
+          background: "var(--background-secondary, #2b2d31)",
+          border: "1px solid var(--background-modifier-accent, #3f4248)",
+          borderRadius: 8,
+          marginTop: 12,
+          padding: "8px 10px"
+        },
         input: {
           background: "var(--background-tertiary, #1e1f22)",
           border: "1px solid var(--background-modifier-accent, #3f4248)",
@@ -1847,6 +1862,7 @@ ${log?.toText(150) || "(no log)"}`;
           width: 8
         }),
         statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
+        summary: { cursor: "pointer", fontSize: 13, fontWeight: 700 },
         title: { fontSize: 16, fontWeight: 700, margin: 0 },
         toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
       };
@@ -1927,16 +1943,16 @@ ${log?.toText(150) || "(no log)"}`;
         ), /* @__PURE__ */ React.createElement("button", { onClick: () => updateBind(bind.id, { keybind: [] }), style: s.btn, title: "Clear keybind" }, "\u2715"), /* @__PURE__ */ React.createElement("button", { onClick: () => testRun(bind.id), style: s.btn, title: "Run now" }, "Run"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeBind(bind.id), style: s.btnDanger, title: "Delete bind" }, "Delete")), (def?.params || []).length ? /* @__PURE__ */ React.createElement("div", { style: { ...s.row, marginTop: 8 } }, (def.params || []).map((spec) => renderParam(bind, spec))) : null, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: bind.global, onChange: (e) => updateBind(bind.id, { global: e.target.checked }), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Global", globalSupported ? "" : " (unavailable)")), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: bind.toastOnRun, onChange: (e) => updateBind(bind.id, { toastOnRun: e.target.checked }), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Toast on run")), def?.description ? /* @__PURE__ */ React.createElement("span", { style: s.small }, def.description) : null), bind.unknown ? /* @__PURE__ */ React.createElement("div", { style: s.notice("warning") }, 'Unknown action "', bind.type, '" \u2014 kept for forward compatibility.') : null, errors.length ? /* @__PURE__ */ React.createElement("div", { style: s.notice("warning") }, errors.join(" ")) : null, result ? /* @__PURE__ */ React.createElement("div", { style: s.result(result.ok) }, result.message || (result.ok ? "OK" : "Failed")) : null);
       }
       const enabledCount = binds.filter((b) => b.enabled).length;
-      return /* @__PURE__ */ React.createElement("div", { style: s.root }, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("h2", { style: s.title }, "Better Keybinds"), /* @__PURE__ */ React.createElement("span", { style: s.badge(globalSupported), title: globalSupported ? "Global shortcuts available" : "DiscordNative unavailable" }, globalSupported ? "Global OK" : "In-app only")), /* @__PURE__ */ React.createElement("div", { style: s.small }, enabledCount, "/", binds.length, " binds enabled. Global binds also fire while Discord is unfocused."), conflicts.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.key, style: s.conflict }, "Conflict on ", c.label, ": ", c.binds.map((b) => bindLabel(binds.find((x) => x.id === b.id) || b)).join(", "))), notice ? /* @__PURE__ */ React.createElement("div", { style: s.notice(notice.kind) }, notice.text) : null, /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: addBind, style: s.btnPrimary }, "+ Add keybind"), /* @__PURE__ */ React.createElement("button", { onClick: doExport, style: s.btn }, "Export"), /* @__PURE__ */ React.createElement("button", { onClick: doCopy, style: s.btn }, "Copy box"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(false), style: s.btn }, "Import (append)"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(true), style: s.btn }, "Import (replace)"), /* @__PURE__ */ React.createElement("button", { onClick: doClear, style: s.btnDanger }, "Delete all")), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement("div", { style: s.label }, "Import / export box"), /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { style: s.root }, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("h2", { style: s.title }, "Better Keybinds"), /* @__PURE__ */ React.createElement("span", { style: s.badge(globalSupported), title: globalSupported ? "Global shortcuts available" : "DiscordNative unavailable" }, globalSupported ? "Global OK" : "In-app only")), /* @__PURE__ */ React.createElement("div", { style: s.small }, enabledCount, "/", binds.length, " binds enabled. Global binds also fire while Discord is unfocused."), conflicts.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.key, style: s.conflict }, "Conflict on ", c.label, ": ", c.binds.map((b) => bindLabel(binds.find((x) => x.id === b.id) || b)).join(", "))), notice ? /* @__PURE__ */ React.createElement("div", { style: s.notice(notice.kind) }, notice.text) : null, /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: addBind, style: s.btnPrimary }, "+ Add keybind")), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("details", { ref: ioDetailsRef, style: s.details }, /* @__PURE__ */ React.createElement("summary", { style: s.summary }, "Import / export / reset"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: doExport, style: s.btn }, "Export"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(false), style: s.btn }, "Import (append)"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(true), style: s.btn }, "Import (replace)"), /* @__PURE__ */ React.createElement("button", { onClick: doClear, style: s.btnDanger }, "Delete all")), /* @__PURE__ */ React.createElement(
         "textarea",
         {
           onChange: (e) => setIoText(e.target.value),
           placeholder: "Export output or paste binds JSON here, then Import.",
           rows: 4,
-          style: { ...s.input, marginTop: 4, width: "100%" },
+          style: { ...s.input, marginTop: 6, width: "100%" },
           value: ioText
         }
-      ), /* @__PURE__ */ React.createElement("div", { style: s.small }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.")), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      )), /* @__PURE__ */ React.createElement("div", { style: s.small }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K."), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
         try {
           log?.clear();
         } catch {
@@ -2005,7 +2021,7 @@ module.exports = class BetterKeybinds {
     }
     const enabled = state.binds.filter((b) => b.enabled).length;
     this.discord.showToast(
-      fresh || state.binds.length === 0 ? "BetterKeybinds: add your first keybind in settings." : `BetterKeybinds: ${enabled}/${state.binds.length} binds active.`,
+      fresh || state.binds.length === 0 ? "Better Keybinds is ready \u2014 add your first keybind in settings." : `Better Keybinds is on \u2014 ${enabled} of ${state.binds.length} keybinds active.`,
       "info"
     );
     try {
@@ -2047,11 +2063,9 @@ module.exports = class BetterKeybinds {
       this.log[res.ok ? "info" : "warn"]("run", `${bind.type} via ${source}: ${res.message || (res.ok ? "OK" : "failed")}`);
     } catch {
     }
-    if (!res.ok || bind.toastOnRun) {
-      this.discord?.showToast(
-        res.ok ? `${res.message || "OK"} (${source})` : res.message || "Bind failed",
-        res.ok ? "success" : "error"
-      );
+    const silentSuccess = res.ok && bind.type === "util.toast";
+    if ((!res.ok || bind.toastOnRun) && !silentSuccess) {
+      this.discord?.showToast(res.message || (res.ok ? "Done" : "That keybind didn't work"), res.ok ? "success" : "error");
     }
     return res;
   }
