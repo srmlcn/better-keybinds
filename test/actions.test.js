@@ -1,0 +1,129 @@
+"use strict";
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const a = require("../src/lib/actions");
+
+describe("clampVolume", () => {
+  it("clamps and rounds", () => {
+    assert.equal(a.clampVolume(50.4), 50);
+    assert.equal(a.clampVolume(-5), 0);
+    assert.equal(a.clampVolume(150), 100);
+    assert.equal(a.clampVolume("75"), 75);
+    assert.equal(a.clampVolume("nope"), null);
+  });
+});
+
+describe("resolveToggle", () => {
+  it("flips 50/100 both ways", () => {
+    assert.equal(a.resolveToggle(50, 50, 100), 100);
+    assert.equal(a.resolveToggle(100, 50, 100), 50);
+  });
+  it("flips to the farther side", () => {
+    assert.equal(a.resolveToggle(60, 50, 100), 100);
+    assert.equal(a.resolveToggle(90, 50, 100), 50);
+  });
+  it("handles unknown current and degenerate levels", () => {
+    assert.equal(a.resolveToggle(null, 50, 100), 100);
+    assert.equal(a.resolveToggle(70, 80, 80), 80);
+    assert.equal(a.resolveToggle(70, 50, "bad"), null);
+  });
+});
+
+describe("validateAction", () => {
+  it("rejects unknown types", () => {
+    assert.deepEqual(a.validateAction("nope.nope", {}), ["Unknown action: nope.nope"]);
+  });
+  it("validates volumes and required text", () => {
+    assert.deepEqual(a.validateAction("output.set", { volume: 80 }), []);
+    assert.equal(a.validateAction("output.set", { volume: 500 }).length, 1);
+    assert.equal(a.validateAction("message.send", { channelScope: "current", text: "" }).length, 1);
+    assert.deepEqual(a.validateAction("message.send", { channelScope: "current", text: "hi" }), []);
+  });
+  it("validates urls and selects", () => {
+    assert.deepEqual(a.validateAction("util.openUrl", { url: "https://example.com" }), []);
+    assert.equal(a.validateAction("util.openUrl", { url: "ftp://x" }).length, 1);
+    assert.equal(a.validateAction("message.send", { channelScope: "bogus", text: "hi" }).length, 1);
+  });
+});
+
+function fakeDiscord(overrides = {}) {
+  return {
+    getCurrentTextChannelId: () => "chan1",
+    getInputVolume: () => 80,
+    getOutputVolume: () => 50,
+    sent: [],
+    setInputVolume: (v) => ({ message: `Input volume ${v}%`, ok: true }),
+    setOutputVolume: (v) => ({ message: `Output volume ${v}%`, ok: true }),
+    showToast: () => {},
+    ...overrides
+  };
+}
+
+describe("runAction", () => {
+  it("toggles output volume via bridge", async () => {
+    let got = null;
+    const discord = fakeDiscord({ setOutputVolume: (v) => { got = v; return { ok: true }; } });
+    const res = await a.runAction("output.toggle", { a: 50, b: 100 }, { discord });
+    assert.equal(res.ok, true);
+    assert.equal(got, 100);
+    assert.match(res.message, /50% -> 100%/);
+  });
+  it("adjusts relative to current", async () => {
+    let got = null;
+    const discord = fakeDiscord({
+      getOutputVolume: () => 90,
+      setOutputVolume: (v) => { got = v; return { ok: true }; }
+    });
+    await a.runAction("output.adjust", { delta: -25 }, { discord });
+    assert.equal(got, 65);
+  });
+  it("fails adjust when current volume unreadable", async () => {
+    const discord = fakeDiscord({ getOutputVolume: () => null });
+    const res = await a.runAction("output.adjust", { delta: 5 }, { discord });
+    assert.equal(res.ok, false);
+  });
+  it("sends to current or saved channel", async () => {
+    const discord = fakeDiscord({ sendMessage: async (c, t) => { discord.sent.push([c, t]); return { ok: true }; } });
+    const r1 = await a.runAction("message.send", { channelScope: "current", text: "hi" }, { discord });
+    assert.equal(r1.ok, true);
+    assert.deepEqual(discord.sent[0], ["chan1", "hi"]);
+    const r2 = await a.runAction("message.send", { channelId: "c9", channelScope: "saved", text: "yo" }, { discord });
+    assert.deepEqual(discord.sent[1], ["c9", "yo"]);
+    assert.equal(r2.ok, true);
+  });
+  it("waits and toasts", async () => {
+    const t0 = Date.now();
+    const r = await a.runAction("util.wait", { ms: 25 }, { discord: fakeDiscord() });
+    assert.equal(r.ok, true);
+    assert.ok(Date.now() - t0 >= 20);
+    const t = await a.runAction("util.toast", { text: "x" }, { discord: fakeDiscord() });
+    assert.equal(t.ok, true);
+  });
+});
+
+describe("runMacroActions", () => {
+  it("runs sequentially and aborts on non-util failure", async () => {
+    const calls = [];
+    const discord = fakeDiscord({
+      setOutputVolume: (v) => { calls.push(v); return v === 1 ? { message: "boom", ok: false } : { ok: true }; }
+    });
+    const res = await a.runMacroActions([
+      { params: { volume: 1 }, type: "output.set" },
+      { params: { volume: 2 }, type: "output.set" }
+    ], { discord });
+    assert.equal(res.ok, false);
+    assert.equal(res.aborted, true);
+    assert.deepEqual(calls, [1]);
+  });
+  it("continues past util failures", async () => {
+    const discord = fakeDiscord();
+    const res = await a.runMacroActions([
+      { params: { url: "https://example.com" }, type: "util.openUrl" },
+      { params: { volume: 30 }, type: "output.set" }
+    ], { discord });
+    assert.equal(res.ok, false);
+    assert.equal(res.results.length, 2);
+    assert.equal(res.results[1].ok, true);
+  });
+});
