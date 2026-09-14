@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.6.2
+ * @version 2.6.3
  * @runAt idle
  */
 "use strict";
@@ -363,14 +363,28 @@ var require_discord = __commonJS({
       // Resolve a Flux store by registered name. Immune to method renames,
       // so it runs before prop filters in every store getter.
       getStoreByName(name) {
+        const Webpack = this.BdApi?.Webpack;
         try {
-          const getStore = this.BdApi?.Webpack?.getStore;
-          if (typeof getStore !== "function") return null;
-          const store = getStore.call(this.BdApi.Webpack, name);
-          return store && (typeof store === "object" || typeof store === "function") ? store : null;
+          const mapped = Webpack?.Stores?.[name];
+          if (mapped && (typeof mapped === "object" || typeof mapped === "function")) return mapped;
         } catch {
-          return null;
         }
+        try {
+          if (typeof Webpack?.getStore === "function") {
+            const store = Webpack.getStore.call(Webpack, name);
+            if (store && (typeof store === "object" || typeof store === "function")) return store;
+          }
+        } catch {
+        }
+        try {
+          const byStoreName = Webpack?.Filters?.byStoreName;
+          if (byStoreName && typeof Webpack?.getModule === "function") {
+            const store = Webpack.getModule(byStoreName(name));
+            if (store && (typeof store === "object" || typeof store === "function")) return store;
+          }
+        } catch {
+        }
+        return null;
       }
       findModule(filter, { searchExports = true } = {}) {
         const BdApi = this.BdApi;
@@ -391,18 +405,35 @@ var require_discord = __commonJS({
         return null;
       }
       findByProps(...props) {
-        const BdApi = this.BdApi;
+        const Webpack = this.BdApi?.Webpack;
         try {
-          const byProps = BdApi?.Webpack?.Filters?.byProps;
-          if (byProps && BdApi?.Webpack?.getModule) {
-            return BdApi.Webpack.getModule(byProps(...props), { searchExports: true }) || null;
+          if (typeof Webpack?.getByKeys === "function") {
+            const hit = Webpack.getByKeys(...props, { searchExports: true }) || null;
+            if (hit) return hit;
+          }
+        } catch (error) {
+          this.warn(`getByKeys threw: ${error?.message || error}`);
+        }
+        try {
+          const byKeys = Webpack?.Filters?.byKeys;
+          if (byKeys && typeof Webpack?.getModule === "function") {
+            const hit = Webpack.getModule(byKeys(...props), { searchExports: true }) || null;
+            if (hit) return hit;
+          }
+        } catch (error) {
+          this.warn(`byKeys threw: ${error?.message || error}`);
+        }
+        try {
+          const byProps = Webpack?.Filters?.byProps;
+          if (byProps && typeof Webpack?.getModule === "function") {
+            return Webpack.getModule(byProps(...props), { searchExports: true }) || null;
           }
         } catch (error) {
           this.warn(`byProps threw: ${error?.message || error}`);
         }
         try {
-          if (typeof BdApi?.findModuleByProps === "function") {
-            return BdApi.findModuleByProps(...props) || null;
+          if (typeof this.BdApi?.findModuleByProps === "function") {
+            return this.BdApi.findModuleByProps(...props) || null;
           }
         } catch (error) {
           this.warn(`legacy findModuleByProps threw: ${error?.message || error}`);
@@ -413,11 +444,19 @@ var require_discord = __commonJS({
         );
       }
       findByStrings(...strings) {
-        const BdApi = this.BdApi;
+        const Webpack = this.BdApi?.Webpack;
         try {
-          const byStrings = BdApi?.Webpack?.Filters?.byStrings;
-          if (byStrings && BdApi?.Webpack?.getModule) {
-            const hit = BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+          if (typeof Webpack?.getByStrings === "function") {
+            const hit = Webpack.getByStrings(...strings, { searchExports: true }) || null;
+            if (hit) return hit;
+          }
+        } catch (error) {
+          this.warn(`getByStrings threw: ${error?.message || error}`);
+        }
+        try {
+          const byStrings = Webpack?.Filters?.byStrings;
+          if (byStrings && typeof Webpack?.getModule === "function") {
+            const hit = Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
             if (hit) return hit;
           }
         } catch (error) {
@@ -494,21 +533,21 @@ var require_discord = __commonJS({
             this.debug("mediaEngine via getStore");
             return named;
           }
-          const strong = (m) => m && typeof m === "object" && !m.$$typeof && typeof m.getOutputVolume === "function" && typeof m.setOutputVolume === "function" && (typeof m.getMediaEngine === "function" || typeof m.getInputVolume === "function" || typeof m.isSelfMute === "function");
-          return this.findModule(strong, { searchExports: false }) || this.findModule(strong, { searchExports: true }) || this.findByProps("getOutputVolume", "setOutputVolume") || this.findModule((m) => typeof m?.getOutputVolume === "function" && typeof m?.setOutputVolume === "function");
+          const strong = (m) => m && typeof m === "object" && !m.$$typeof && typeof m.getOutputVolume === "function" && (typeof m.getMediaEngine === "function" || typeof m.getInputVolume === "function" || typeof m.isSelfMute === "function");
+          return this.findModule(strong, { searchExports: false }) || this.findModule(strong, { searchExports: true }) || this.findByProps("getOutputVolume", "getMediaEngine") || this.findModule((m) => typeof m?.getOutputVolume === "function");
         });
       }
       getVoiceActions() {
-        return this.cached("voiceActions", () => this.findByProps("toggleSelfMute", "toggleSelfDeaf") || this.findModule((m) => typeof m?.toggleSelfMute === "function" && typeof m?.toggleSelfDeaf === "function"));
+        return this.cached("voiceActions", () => this.findByProps("toggleSelfMute", "toggleSelfDeaf", "setOutputVolume") || this.findByProps("toggleSelfMute", "toggleSelfDeaf") || this.findModule((m) => typeof m?.toggleSelfMute === "function" && typeof m?.toggleSelfDeaf === "function"));
       }
       getChannelActions() {
-        return this.cached("channelActions", () => this.findModule((m) => typeof m?.selectChannel === "function" && typeof m?.selectVoiceChannel === "function") || this.findModule((m) => typeof m?.selectChannel === "function"));
+        return this.cached("channelActions", () => this.findByProps("selectChannel", "selectVoiceChannel") || this.findModule((m) => typeof m?.selectChannel === "function" && typeof m?.selectVoiceChannel === "function") || this.findModule((m) => typeof m?.selectChannel === "function"));
       }
       getChannelRouter() {
         return this.cached("channelRouter", () => this.findByProps("transitionToChannel"));
       }
       getMessageActions() {
-        return this.cached("messageActions", () => this.findModule((m) => typeof m?.sendMessage === "function" && typeof m?.receiveMessage === "function") || this.findModule((m) => typeof m?.sendMessage === "function"));
+        return this.cached("messageActions", () => this.findByProps("sendMessage", "editMessage") || this.findModule((m) => typeof m?.sendMessage === "function" && typeof m?.receiveMessage === "function") || this.findModule((m) => typeof m?.sendMessage === "function"));
       }
       getSelectedChannelStore() {
         return this.cached("selectedChannel", () => this.getStoreByName("SelectedChannelStore") || this.findByProps("getCurrentlySelectedChannelId") || this.findByProps("getLastSelectedChannelId"));
@@ -727,10 +766,10 @@ var require_discord = __commonJS({
         return null;
       }
       isSelfMute() {
-        return this.readFlag(["isSelfMute", "isSelfMuted", "isMuted"]);
+        return this.readFlag(["isSelfMute", "isSelfMuted", "isMute", "isMuted"]);
       }
       isSelfDeaf() {
-        return this.readFlag(["isSelfDeaf", "isSelfDeafened", "isDeafened"]);
+        return this.readFlag(["isSelfDeaf", "isSelfDeafened", "isDeaf", "isDeafened"]);
       }
       toggleSelfMute() {
         const done = () => {
@@ -799,32 +838,41 @@ var require_discord = __commonJS({
         return res.ok ? { ok: true, message: deafened ? "Deafened" : "Undeafened" } : res;
       }
       disconnectVoice() {
-        const res = this.dispatch("VOICE_CHANNEL_SELECT", { channelId: null });
-        if (res.ok) return { ok: true, message: "Left the voice channel" };
         try {
           const actions = this.getChannelActions();
+          if (actions && typeof actions.disconnect === "function") {
+            actions.disconnect();
+            return { ok: true, message: "Left the voice channel" };
+          }
           if (actions && typeof actions.selectVoiceChannel === "function") {
             actions.selectVoiceChannel(null);
             return { ok: true, message: "Left the voice channel" };
           }
-        } catch {
+        } catch (error) {
+          this.debug(`voice disconnect threw: ${error?.message || error}`);
         }
-        return res.ok ? res : { ok: false, message: res.message || "Couldn't leave the voice channel." };
+        const res = this.dispatch("VOICE_CHANNEL_SELECT", { channelId: null });
+        return res.ok ? { ok: true, message: "Left the voice channel" } : { ok: false, message: res.message || "Couldn't leave the voice channel." };
       }
       goToChannel(guildId, channelId) {
         if (!guildId || !channelId) return { ok: false, message: "This keybind needs a server and channel ID." };
-        const res = this.dispatch("CHANNEL_SELECT", { channelId: String(channelId), guildId: String(guildId) });
-        if (res.ok) return { ok: true, message: "Switched channel" };
+        const gid = String(guildId);
+        const cid = String(channelId);
         try {
           const actions = this.getChannelActions();
           if (actions && typeof actions.selectChannel === "function") {
-            if (actions.selectChannel.length >= 2) actions.selectChannel(guildId, channelId);
-            else actions.selectChannel(channelId);
+            actions.selectChannel({ channelId: cid, guildId: gid });
             return { ok: true, message: "Switched channel" };
           }
+        } catch (error) {
+          this.debug(`selectChannel threw: ${error?.message || error}`);
+        }
+        const res = this.dispatch("CHANNEL_SELECT", { channelId: cid, guildId: gid });
+        if (res.ok) return { ok: true, message: "Switched channel" };
+        try {
           const router = this.getChannelRouter();
           if (router && typeof router.transitionToChannel === "function") {
-            router.transitionToChannel(channelId);
+            router.transitionToChannel(cid);
             return { ok: true, message: "Switched channel" };
           }
         } catch (error) {
@@ -836,11 +884,11 @@ var require_discord = __commonJS({
         try {
           const store = this.getSelectedChannelStore();
           if (!store) return null;
-          if (typeof store.getCurrentlySelectedChannelId === "function") {
-            return store.getCurrentlySelectedChannelId() || null;
-          }
-          if (typeof store.getLastSelectedChannelId === "function") {
-            return store.getLastSelectedChannelId() || null;
+          for (const key of ["getCurrentlySelectedChannelId", "getChannelId", "getLastSelectedChannelId"]) {
+            if (typeof store[key] === "function") {
+              const id = store[key]();
+              if (id) return String(id);
+            }
           }
         } catch {
         }
@@ -855,7 +903,12 @@ var require_discord = __commonJS({
           return { ok: false, message: "Couldn't reach Discord's messaging \u2014 Discord may have updated." };
         }
         try {
-          const res = actions.sendMessage(String(channelId), { content: String(content) });
+          const res = actions.sendMessage(String(channelId), {
+            content: String(content),
+            invalidEmojis: [],
+            tts: false,
+            validNonShortcutEmojis: []
+          });
           if (res && typeof res.then === "function") await res;
           return { ok: true, message: "Message sent" };
         } catch (error) {
@@ -926,8 +979,14 @@ var require_discord = __commonJS({
       getChannel(channelId) {
         try {
           const store = this.getChannelStore();
-          if (store && typeof store.getChannel === "function" && channelId) {
-            return store.getChannel(String(channelId)) || null;
+          if (!store || !channelId) return null;
+          const id = String(channelId);
+          if (typeof store.getChannel === "function") {
+            const channel = store.getChannel(id);
+            if (channel) return channel;
+          }
+          if (typeof store.getBasicChannel === "function") {
+            return store.getBasicChannel(id) || null;
           }
         } catch {
         }
@@ -943,8 +1002,16 @@ var require_discord = __commonJS({
         } catch {
         }
         try {
-          const me = this.getUserStore()?.getCurrentUser?.()?.id;
           const store = this.getVoiceStateStore();
+          if (typeof store?.getCurrentClientVoiceChannelId === "function") {
+            const id = store.getCurrentClientVoiceChannelId();
+            if (id) return String(id);
+          }
+          const me = this.getUserStore()?.getCurrentUser?.()?.id;
+          if (me && typeof store?.getUserVoiceChannelId === "function") {
+            const id = store.getUserVoiceChannelId(me);
+            if (id) return String(id);
+          }
           const state = me && typeof store?.getVoiceStateForUser === "function" ? store.getVoiceStateForUser(me) : null;
           if (state?.channelId) return String(state.channelId);
         } catch {
@@ -961,15 +1028,30 @@ var require_discord = __commonJS({
         }
         return null;
       }
+      extractStreamKey(payload) {
+        if (typeof payload === "string" && payload.includes(":")) return payload;
+        if (!payload || typeof payload !== "object") return null;
+        for (const key of ["streamKey", "stream_key"]) {
+          if (typeof payload[key] === "string" && payload[key]) return payload[key];
+        }
+        return null;
+      }
+      channelGuildId(channel) {
+        if (!channel || typeof channel !== "object") return null;
+        const id = channel.guild_id ?? channel.guildId ?? null;
+        return id == null ? null : String(id);
+      }
       // Prefer the key Discord announced (STREAM_CREATE), then the stream's own
       // key, then the documented type:guild:channel:owner construction.
       resolveStreamKey(stream = null) {
         if (this.streamKey) return this.streamKey;
         const s = stream || this.getSelfStream();
         if (!s || typeof s !== "object") return null;
-        if (typeof s.streamKey === "string" && s.streamKey) return s.streamKey;
-        const parts = [s.guildId, s.channelId, s.ownerId].filter(Boolean).map(String);
-        if (s.streamType && parts.length >= 2) return `${s.streamType}:${parts.join(":")}`;
+        const explicit = this.extractStreamKey(s);
+        if (explicit) return explicit;
+        const parts = [s.guildId ?? s.guild_id, s.channelId ?? s.channel_id, s.ownerId ?? s.owner_id].filter(Boolean).map(String);
+        const streamType = s.streamType || s.stream_type;
+        if (streamType && parts.length >= 2) return `${streamType}:${parts.join(":")}`;
         return null;
       }
       subscribeStreamEvents() {
@@ -978,7 +1060,7 @@ var require_discord = __commonJS({
         if (!flux || typeof flux.subscribe !== "function") return;
         this.onStreamCreate = (payload) => {
           try {
-            const key = typeof payload === "string" ? payload : payload?.streamKey || null;
+            const key = this.extractStreamKey(payload);
             if (key) {
               this.streamKey = key;
               this.debug(`stream key tracked: ${key}`);
@@ -1156,7 +1238,7 @@ var require_discord = __commonJS({
         const channelId = this.getVoiceChannelId();
         if (!channelId) return { error: "Join a voice channel first, then try again." };
         const channel = this.getChannel(channelId);
-        return { channelId, guildId: channel?.guild_id ?? null };
+        return { channelId, guildId: this.channelGuildId(channel) };
       }
       async beginStream({ channelId, guildId, label, pid = null, source }) {
         const startFn = this.findCodeFunction('type:"STREAM_START"');
@@ -1572,7 +1654,7 @@ var require_discord = __commonJS({
           inputVolume: this.getInputVolume(),
           keycodeMap: Boolean(this.getKeycodeMap()),
           mediaEngine: Boolean(media),
-          mediaMethods: media ? ["getOutputVolume", "setOutputVolume", "getInputVolume", "setInputVolume", "getMediaEngine", "isSelfMute", "isSelfDeaf"].filter((k) => typeof media[k] === "function") : [],
+          mediaMethods: media ? ["getOutputVolume", "getInputVolume", "getMediaEngine", "isSelfMute", "isSelfDeaf", "getGoLiveSource", "getGoLiveContext"].filter((k) => typeof media[k] === "function") : [],
           messageActions: Boolean(this.getMessageActions()),
           nativeModules: this.inspectNativeModules(),
           outputTracked: this.lastSetOutputVolume,

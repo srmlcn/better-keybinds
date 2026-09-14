@@ -112,7 +112,7 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(p.flux, true);
     assert.equal(p.mediaEngine, true);
     assert.ok(p.mediaMethods.includes("getOutputVolume"));
-    assert.ok(p.mediaMethods.includes("setOutputVolume"));
+    assert.ok(p.mediaMethods.includes("getInputVolume"));
     assert.equal(p.voiceActions, true);
     assert.equal(p.audioPath.setters.setOutputVolume, true);
     assert.equal(p.audioPath.hasOutputVolumeHandler, null);
@@ -438,6 +438,130 @@ describe("findCodeFunction", () => {
     assert.equal(missing.findCodeFunction("ABSENT_XYZ"), null);
     assert.equal(missing.findCodeFunction("ABSENT_XYZ"), null);
     assert.equal(sweeps, 2);
+  });
+});
+
+describe("current Webpack helpers", () => {
+  it("prefers Webpack.Stores then getStore", () => {
+    const named = { getOutputVolume: () => 9 };
+    const d = new DiscordBridge({
+      Webpack: {
+        Stores: { MediaEngineStore: named },
+        getStore: () => { throw new Error("should not run"); }
+      }
+    });
+    assert.equal(d.getMediaEngineStore(), named);
+  });
+  it("uses getByKeys before Filters.byProps", () => {
+    const keyed = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: { byProps: () => () => false },
+        getByKeys: (...args) => (args.includes("dispatch") ? keyed : null),
+        getModule: () => { throw new Error("should not run"); }
+      }
+    });
+    assert.equal(d.getFlux(), keyed);
+  });
+  it("resolves MediaEngineStore without volume setters", () => {
+    const store = {
+      getInputVolume: () => 10,
+      getMediaEngine: () => ({}),
+      getOutputVolume: () => 40,
+      isSelfMute: () => false
+    };
+    const d = new DiscordBridge({
+      Webpack: {
+        getModule: (filter) => {
+          try {
+            return filter(store) ? store : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    });
+    assert.equal(d.getMediaEngineStore(), store);
+    assert.equal(d.getOutputVolume(), 40);
+  });
+});
+
+describe("channel and message actions", () => {
+  it("selects a channel with the current options object", () => {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("channelActions", {
+      selectChannel: (opts) => calls.push(opts),
+      selectVoiceChannel: () => {}
+    });
+    const res = d.goToChannel("g1", "c1");
+    assert.equal(res.ok, true);
+    assert.deepEqual(calls, [{ channelId: "c1", guildId: "g1" }]);
+  });
+  it("disconnects via ChannelActions.disconnect first", () => {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("channelActions", {
+      disconnect: () => calls.push("disconnect"),
+      selectVoiceChannel: () => calls.push("select")
+    });
+    assert.equal(d.disconnectVoice().ok, true);
+    assert.deepEqual(calls, ["disconnect"]);
+  });
+  it("falls back to selectVoiceChannel(null)", () => {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("channelActions", { selectVoiceChannel: (id) => calls.push(id) });
+    assert.equal(d.disconnectVoice().ok, true);
+    assert.deepEqual(calls, [null]);
+  });
+  it("reads text channel via getChannelId", () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getChannelId: () => "c7" });
+    assert.equal(d.getCurrentTextChannelId(), "c7");
+  });
+  it("sends messages with the current client payload", async () => {
+    const sent = [];
+    const d = new DiscordBridge({});
+    d.cache.set("messageActions", {
+      sendMessage: (channelId, message) => sent.push([channelId, message])
+    });
+    const res = await d.sendMessage("c1", "hello");
+    assert.equal(res.ok, true);
+    assert.equal(sent[0][0], "c1");
+    assert.equal(sent[0][1].content, "hello");
+    assert.equal(sent[0][1].tts, false);
+    assert.deepEqual(sent[0][1].invalidEmojis, []);
+    assert.deepEqual(sent[0][1].validNonShortcutEmojis, []);
+  });
+});
+
+describe("stream key and guild id shapes", () => {
+  it("reads guildId camelCase off channel objects", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.channelGuildId({ guildId: "g9" }), "g9");
+    assert.equal(d.channelGuildId({ guild_id: "g8" }), "g8");
+    assert.equal(d.channelGuildId({}), null);
+  });
+  it("extracts STREAM_CREATE keys from current payload shapes", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.extractStreamKey("guild:g:c:u"), "guild:g:c:u");
+    assert.equal(d.extractStreamKey({ streamKey: "guild:g:c:u" }), "guild:g:c:u");
+    assert.equal(d.extractStreamKey({ stream_key: "call:c:u" }), "call:c:u");
+    assert.equal(d.extractStreamKey({ type: "STREAM_CREATE" }), null);
+  });
+  it("constructs stream keys from snake_case stream objects", () => {
+    const d = new DiscordBridge({});
+    assert.equal(
+      d.resolveStreamKey({ channel_id: "c", guild_id: "g", owner_id: "u", stream_type: "guild" }),
+      "guild:g:c:u"
+    );
+  });
+  it("uses VoiceStateStore.getCurrentClientVoiceChannelId", () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => null });
+    d.cache.set("voiceState", { getCurrentClientVoiceChannelId: () => "vc3" });
+    assert.equal(d.getVoiceChannelId(), "vc3");
   });
 });
 
