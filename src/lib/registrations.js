@@ -13,20 +13,20 @@ const TRIGGER_DEBOUNCE_MS = 150;
 const GLOBAL_ID_BASE = 4100000;
 const GLOBAL_ID_RANGE = 50000;
 
-function numericIdFor(macroId) {
-  const s = String(macroId);
+function numericIdFor(bindId) {
+  const s = String(bindId);
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return GLOBAL_ID_BASE + (Math.abs(h) % GLOBAL_ID_RANGE);
 }
 
 // Owns in-app listeners plus global shortcut registrations.
-class MacroEngine {
-  constructor({ discord, getMacros, notify, runMacroById }) {
+class BindEngine {
+  constructor({ discord, getBinds, notify, runBindById }) {
     this.discord = discord;
-    this.getMacros = getMacros;
+    this.getBinds = getBinds;
     this.notify = notify || (() => {});
-    this.runMacroById = runMacroById;
+    this.runBindById = runBindById;
     this.pressed = new Set();
     this.fired = new Set();
     this.lastFired = new Map();
@@ -66,8 +66,8 @@ class MacroEngine {
     this.refreshGlobal();
   }
 
-  activeMacros() {
-    return (this.getMacros() || []).filter((m) => m && m.enabled && m.keybind && m.keybind.length);
+  activeBinds() {
+    return (this.getBinds() || []).filter((b) => b && b.enabled && b.keybind && b.keybind.length);
   }
 
   handleKeyDown(event) {
@@ -76,15 +76,15 @@ class MacroEngine {
     if (!key) return;
     this.pressed.add(key);
     const now = Date.now();
-    for (const macro of this.activeMacros()) {
-      if (!pressedMatches(this.pressed, macro.keybind)) continue;
-      if (this.fired.has(macro.id)) continue;
-      if (shouldSkipForTarget(macro.keybind, event.target)) continue;
-      if (now - (this.lastFired.get(macro.id) || 0) < TRIGGER_DEBOUNCE_MS) continue;
-      this.fired.add(macro.id);
-      this.lastFired.set(macro.id, now);
+    for (const bind of this.activeBinds()) {
+      if (!pressedMatches(this.pressed, bind.keybind)) continue;
+      if (this.fired.has(bind.id)) continue;
+      if (shouldSkipForTarget(bind.keybind, event.target)) continue;
+      if (now - (this.lastFired.get(bind.id) || 0) < TRIGGER_DEBOUNCE_MS) continue;
+      this.fired.add(bind.id);
+      this.lastFired.set(bind.id, now);
       try {
-        this.runMacroById(macro.id, "in-app");
+        this.runBindById(bind.id, "in-app");
       } catch { /* runner reports its own errors */ }
     }
   }
@@ -93,11 +93,11 @@ class MacroEngine {
     const key = eventToKeyName(event);
     if (key) this.pressed.delete(key);
     if (this.fired.size === 0) return;
-    const macros = new Map((this.getMacros() || []).map((m) => [m.id, m]));
+    const binds = new Map((this.getBinds() || []).map((b) => [b.id, b]));
     for (const id of [...this.fired]) {
-      const macro = macros.get(id);
-      const bind = normalizeKeybind(macro?.keybind, 99);
-      if (!key || bind.includes(key) || !macro) this.fired.delete(id);
+      const bind = binds.get(id);
+      const chord = normalizeKeybind(bind?.keybind, 99);
+      if (!key || chord.includes(key) || !bind) this.fired.delete(id);
     }
   }
 
@@ -106,12 +106,12 @@ class MacroEngine {
     this.fired.clear();
   }
 
-  handleGlobalTrigger(macroId) {
+  handleGlobalTrigger(bindId) {
     const now = Date.now();
-    if (now - (this.lastFired.get(macroId) || 0) < TRIGGER_DEBOUNCE_MS) return;
-    this.lastFired.set(macroId, now);
+    if (now - (this.lastFired.get(bindId) || 0) < TRIGGER_DEBOUNCE_MS) return;
+    this.lastFired.set(bindId, now);
     try {
-      this.runMacroById(macroId, "global");
+      this.runBindById(bindId, "global");
     } catch { /* runner reports its own errors */ }
   }
 
@@ -127,43 +127,44 @@ class MacroEngine {
   }
 
   // Global registrations cover Discord-blurred only; the in-app listener
-  // covers the focused case so macros never double-fire.
+  // covers the focused case so binds never double-fire.
   refreshGlobal() {
     this.unregisterAllGlobal();
     const supported = Boolean(this.discord?.hasGlobalSupport?.());
     this.globalStatus = { errors: [], registered: 0, supported };
-    const wanted = (this.getMacros() || []).filter((m) => m && m.enabled && m.global && m.keybind && m.keybind.length);
+    const wanted = (this.getBinds() || []).filter((b) => b && b.enabled && b.global && b.keybind && b.keybind.length);
     if (!wanted.length) {
       this.lastGlobalErrorSig = "";
       return;
     }
     if (!supported) {
-      this.globalStatus.errors.push("DiscordNative global shortcuts unavailable; global macros work in-app only.");
+      this.globalStatus.errors.push("DiscordNative global shortcuts unavailable; global binds work in-app only.");
       this.notifyGlobalErrors();
       return;
     }
     const utils = this.discord.getDiscordUtils();
     const map = this.discord.getKeycodeMap();
-    for (const macro of wanted) {
-      const { error, keys } = buildGlobalKeyArray(macro.keybind, map, WINDOWS_FALLBACK_VK);
+    for (const bind of wanted) {
+      const label = bind.type || bind.id;
+      const { error, keys } = buildGlobalKeyArray(bind.keybind, map, WINDOWS_FALLBACK_VK);
       if (error || !keys) {
-        this.globalStatus.errors.push(`"${macro.name}": ${error || "unresolvable keybind"}`);
+        this.globalStatus.errors.push(`"${label}": ${error || "unresolvable keybind"}`);
         continue;
       }
-      const numId = numericIdFor(macro.id);
+      const numId = numericIdFor(bind.id);
       try {
         utils.inputEventRegister(
           numId,
           keys,
           (isDown) => {
-            if (isDown) this.handleGlobalTrigger(macro.id);
+            if (isDown) this.handleGlobalTrigger(bind.id);
           },
           { blurred: true, focused: false, keydown: true, keyup: false }
         );
-        this.globalIds.set(macro.id, numId);
+        this.globalIds.set(bind.id, numId);
         this.globalStatus.registered += 1;
       } catch (err) {
-        this.globalStatus.errors.push(`"${macro.name}": ${err?.message || err}`);
+        this.globalStatus.errors.push(`"${label}": ${err?.message || err}`);
       }
     }
     this.notifyGlobalErrors();
@@ -179,4 +180,4 @@ class MacroEngine {
   }
 }
 
-module.exports = { GLOBAL_ID_BASE, MacroEngine, numericIdFor };
+module.exports = { BindEngine, GLOBAL_ID_BASE, numericIdFor };

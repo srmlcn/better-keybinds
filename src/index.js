@@ -1,12 +1,12 @@
 "use strict";
 
 const { DiscordBridge } = require("./lib/discord");
-const { MacroEngine } = require("./lib/registrations");
-const { actionTypes, runMacroActions } = require("./lib/actions");
+const { BindEngine } = require("./lib/registrations");
+const { actionTypes, runBind } = require("./lib/actions");
 const { loadState, saveState } = require("./lib/store");
 const SettingsPanel = require("./ui/SettingsPanel");
 
-module.exports = class KeybindMacros {
+module.exports = class BetterKeybinds {
   constructor(meta) {
     this.meta = meta;
     this.state = null;
@@ -16,38 +16,38 @@ module.exports = class KeybindMacros {
 
   log(...args) {
     try {
-      if (globalThis.BdApi?.Logger?.info) globalThis.BdApi.Logger.info("KeybindMacros", ...args);
-      else console.log("[KeybindMacros]", ...args);
+      if (globalThis.BdApi?.Logger?.info) globalThis.BdApi.Logger.info("BetterKeybinds", ...args);
+      else console.log("[BetterKeybinds]", ...args);
     } catch {
-      console.log("[KeybindMacros]", ...args);
+      console.log("[BetterKeybinds]", ...args);
     }
   }
 
   start() {
     const BdApi = globalThis.BdApi;
     if (!BdApi) {
-      console.error("[KeybindMacros] BdApi unavailable.");
+      console.error("[BetterKeybinds] BdApi unavailable.");
       return;
     }
     this.discord = new DiscordBridge(BdApi);
-    const pluginName = this.meta?.name || "KeybindMacros";
+    const pluginName = this.meta?.name || "BetterKeybinds";
     const { fresh, state } = loadState(BdApi, pluginName, actionTypes());
     this.state = state;
-    this.engine = new MacroEngine({
+    this.engine = new BindEngine({
       discord: this.discord,
-      getMacros: () => this.state.macros,
+      getBinds: () => this.state.binds,
       notify: (message, type) => this.discord.showToast(message, type),
-      runMacroById: (id, source) => void this.runMacroById(id, source)
+      runBindById: (id, source) => void this.runBindById(id, source)
     });
     this.engine.start();
     try {
-      globalThis.KeybindMacros = this;
+      globalThis.BetterKeybinds = this;
     } catch { /* ignore */ }
-    const enabled = state.macros.filter((m) => m.enabled).length;
+    const enabled = state.binds.filter((b) => b.enabled).length;
     this.discord.showToast(
-      fresh
-        ? `KeybindMacros: ${state.macros.length} starter macros ready — assign keybinds in settings.`
-        : `KeybindMacros: ${enabled}/${state.macros.length} macros active.`,
+      fresh || state.binds.length === 0
+        ? "BetterKeybinds: add your first keybind in settings."
+        : `BetterKeybinds: ${enabled}/${state.binds.length} binds active.`,
       "info"
     );
     // Discord lazy-loads modules; warm caches once the client idles.
@@ -60,7 +60,7 @@ module.exports = class KeybindMacros {
         } catch { /* next refresh covers it */ }
       });
     } catch { /* ignore */ }
-    this.log(`started (${enabled}/${state.macros.length} macros active)`);
+    this.log(`started (${enabled}/${state.binds.length} binds active)`);
   }
 
   stop() {
@@ -69,33 +69,30 @@ module.exports = class KeybindMacros {
     } catch { /* ignore */ }
     this.engine = null;
     try {
-      if (globalThis.KeybindMacros === this) delete globalThis.KeybindMacros;
+      if (globalThis.BetterKeybinds === this) delete globalThis.BetterKeybinds;
     } catch { /* ignore */ }
     this.log("stopped");
   }
 
-  async runMacroById(id, source = "manual") {
-    const macro = this.state?.macros.find((m) => m.id === id);
-    if (!macro) return { message: "Macro not found.", ok: false };
-    if (!macro.enabled) return { message: "Macro is disabled.", ok: false };
-    const res = await runMacroActions(macro.actions || [], { discord: this.discord });
-    if (macro.toastOnRun && this.discord) {
-      const done = res.results.filter((r) => r.ok).length;
-      const total = res.results.length;
-      const firstFail = res.results.find((r) => !r.ok);
-      this.discord.showToast(
-        res.ok ? `${macro.name} (${source})` : `${macro.name}: ${firstFail?.message || `${done}/${total} ok`}`,
+  async runBindById(id, source = "manual") {
+    const bind = this.state?.binds.find((b) => b.id === id);
+    if (!bind) return { message: "Bind not found.", ok: false };
+    if (!bind.enabled) return { message: "Bind is disabled.", ok: false };
+    const res = await runBind(bind, { discord: this.discord });
+    if (!res.ok || bind.toastOnRun) {
+      this.discord?.showToast(
+        res.ok ? `${res.message || "OK"} (${source})` : (res.message || "Bind failed"),
         res.ok ? "success" : "error"
       );
     }
     return res;
   }
 
-  updateMacros(macros) {
+  updateBinds(binds) {
     if (!this.state) return;
-    this.state.macros = macros;
+    this.state.binds = binds;
     try {
-      saveState(globalThis.BdApi, this.meta?.name || "KeybindMacros", this.state);
+      saveState(globalThis.BdApi, this.meta?.name || "BetterKeybinds", this.state);
     } catch { /* non-fatal */ }
     try {
       this.engine?.refresh();
@@ -106,7 +103,7 @@ module.exports = class KeybindMacros {
     if (!this.state) return;
     this.state.settings = settings;
     try {
-      saveState(globalThis.BdApi, this.meta?.name || "KeybindMacros", this.state);
+      saveState(globalThis.BdApi, this.meta?.name || "BetterKeybinds", this.state);
     } catch { /* non-fatal */ }
   }
 
@@ -114,13 +111,13 @@ module.exports = class KeybindMacros {
     const BdApi = globalThis.BdApi;
     const React = BdApi?.React;
     if (!React || !this.state) {
-      return "<div style='padding:16px'>KeybindMacros: settings unavailable (BdApi.React missing).</div>";
+      return "<div style='padding:16px'>BetterKeybinds: settings unavailable (BdApi.React missing).</div>";
     }
     return React.createElement(SettingsPanel, {
       discord: this.discord,
-      initialMacros: this.state.macros,
-      onMacros: (macros) => this.updateMacros(macros),
-      onRun: (id) => void this.runMacroById(id, "manual"),
+      initialBinds: this.state.binds,
+      onBinds: (binds) => this.updateBinds(binds),
+      onRun: (id) => this.runBindById(id, "manual"),
       React,
       settings: this.state.settings
     });

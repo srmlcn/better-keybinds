@@ -1,10 +1,10 @@
 "use strict";
 
+const { validateAction } = require("./actions");
 const { conflictKey, keybindToString, normalizeKeybind } = require("./keybinds");
 
 const STATE_KEY = "state";
-const STATE_VERSION = 1;
-const MAX_ACTIONS_PER_MACRO = 20;
+const STATE_VERSION = 2;
 const MAX_KEYBIND_KEYS = 5;
 
 const DEFAULT_SETTINGS = {
@@ -12,86 +12,43 @@ const DEFAULT_SETTINGS = {
   defaultToast: true
 };
 
-function generateId(prefix = "m") {
+function generateId(prefix = "b") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function defaultPresets() {
-  const base = { enabled: true, global: false, keybind: [], toastOnRun: true };
-  return [
-    {
-      ...base,
-      actions: [{ params: { a: 50, b: 100 }, type: "output.toggle" }],
-      id: "preset-output-toggle",
-      name: "Speaker 50/100 toggle"
-    },
-    {
-      ...base,
-      actions: [{ params: { volume: 50 }, type: "output.set" }],
-      id: "preset-output-50",
-      name: "Speaker 50%"
-    },
-    {
-      ...base,
-      actions: [{ params: { volume: 100 }, type: "output.set" }],
-      id: "preset-output-100",
-      name: "Speaker 100%"
-    },
-    {
-      ...base,
-      actions: [{ params: {}, type: "self.toggleMute" }],
-      id: "preset-toggle-mute",
-      name: "Toggle mute"
-    },
-    {
-      ...base,
-      actions: [{ params: {}, type: "self.toggleDeafen" }],
-      id: "preset-toggle-deafen",
-      name: "Toggle deafen"
-    }
-  ];
+function freshState() {
+  return { binds: [], settings: { ...DEFAULT_SETTINGS }, version: STATE_VERSION };
 }
 
-function sanitizeAction(action, knownTypes) {
-  if (!action || typeof action.type !== "string" || !action.type) return null;
-  const params = action.params && typeof action.params === "object" && !Array.isArray(action.params)
-    ? { ...action.params }
+// Bind: {id, type, params, keybind, enabled, global, toastOnRun}
+function sanitizeBind(bind, knownTypes) {
+  if (!bind || typeof bind !== "object") return null;
+  if (typeof bind.type !== "string" || !bind.type) return null;
+  const params = bind.params && typeof bind.params === "object" && !Array.isArray(bind.params)
+    ? { ...bind.params }
     : {};
-  const clean = { params, type: action.type };
-  if (Array.isArray(knownTypes) && !knownTypes.includes(action.type)) clean.unknown = true;
+  const clean = {
+    enabled: bind.enabled !== false,
+    global: bind.global === true,
+    id: typeof bind.id === "string" && bind.id ? bind.id : generateId(),
+    keybind: normalizeKeybind(bind.keybind, MAX_KEYBIND_KEYS),
+    params,
+    toastOnRun: bind.toastOnRun !== false,
+    type: bind.type
+  };
+  if (Array.isArray(knownTypes) && !knownTypes.includes(bind.type)) clean.unknown = true;
   return clean;
 }
 
-function sanitizeMacro(macro, knownTypes) {
-  if (!macro || typeof macro !== "object") return null;
-  const actions = Array.isArray(macro.actions) ? macro.actions : [];
-  const name = typeof macro.name === "string" && macro.name.trim()
-    ? macro.name.trim().slice(0, 80)
-    : "Untitled macro";
-  return {
-    actions: actions
-      .map((a) => sanitizeAction(a, knownTypes))
-      .filter(Boolean)
-      .slice(0, MAX_ACTIONS_PER_MACRO),
-    enabled: macro.enabled !== false,
-    global: macro.global === true,
-    id: typeof macro.id === "string" && macro.id ? macro.id : generateId(),
-    keybind: normalizeKeybind(macro.keybind, MAX_KEYBIND_KEYS),
-    name,
-    toastOnRun: macro.toastOnRun !== false
-  };
-}
-
-function validateMacro(macro, knownTypes) {
+function validateBind(bind, knownTypes) {
   const errors = [];
-  if (!macro.name || !macro.name.trim()) errors.push("Name is empty.");
-  if (!macro.keybind || !macro.keybind.length) errors.push("No keybind assigned.");
-  if (!macro.actions || !macro.actions.length) errors.push("No actions configured.");
-  for (const action of macro.actions || []) {
-    if (action.unknown || (Array.isArray(knownTypes) && !knownTypes.includes(action.type))) {
-      errors.push(`Unknown action type: ${action.type}`);
-    }
+  if (!bind.type) errors.push("No action selected.");
+  else if (Array.isArray(knownTypes) && !knownTypes.includes(bind.type)) {
+    errors.push(`Unknown action type: ${bind.type}`);
+  } else {
+    errors.push(...validateAction(bind.type, bind.params));
   }
+  if (!bind.keybind || !bind.keybind.length) errors.push("No keybind assigned.");
   return errors;
 }
 
@@ -107,32 +64,28 @@ function loadState(BdApi, pluginName, knownTypes) {
   try {
     const raw = BdApi?.Data?.load(pluginName, STATE_KEY);
     if (raw === undefined || raw === null) {
-      const state = { macros: defaultPresets(), settings: { ...DEFAULT_SETTINGS }, version: STATE_VERSION };
+      const state = freshState();
       saveState(BdApi, pluginName, state);
       return { fresh: true, state };
     }
-    const macros = Array.isArray(raw.macros) ? raw.macros : [];
+    const binds = Array.isArray(raw.binds) ? raw.binds : [];
     return {
       fresh: false,
       state: {
-        macros: macros.map((m) => sanitizeMacro(m, knownTypes)).filter(Boolean),
+        binds: binds.map((b) => sanitizeBind(b, knownTypes)).filter(Boolean),
         settings: sanitizeSettings(raw.settings),
         version: STATE_VERSION
       }
     };
   } catch (error) {
-    return {
-      error,
-      fresh: true,
-      state: { macros: defaultPresets(), settings: { ...DEFAULT_SETTINGS }, version: STATE_VERSION }
-    };
+    return { error, fresh: true, state: freshState() };
   }
 }
 
 function saveState(BdApi, pluginName, state) {
   try {
     BdApi?.Data?.save(pluginName, STATE_KEY, {
-      macros: state.macros,
+      binds: state.binds,
       settings: state.settings,
       version: STATE_VERSION
     });
@@ -144,9 +97,9 @@ function saveState(BdApi, pluginName, state) {
 
 function exportState(state) {
   return JSON.stringify({
-    app: "KeybindMacros",
+    app: "BetterKeybinds",
+    binds: state.binds,
     exportedAt: new Date().toISOString(),
-    macros: state.macros,
     version: STATE_VERSION
   }, null, 2);
 }
@@ -158,74 +111,69 @@ function importState(text, knownTypes) {
   } catch {
     throw new Error("Import text is not valid JSON.");
   }
-  const list = Array.isArray(parsed) ? parsed : parsed?.macros;
-  if (!Array.isArray(list)) throw new Error("Import must be a macro array or {macros:[...]}.");
-  if (!list.length) throw new Error("Import contains no macros.");
+  const list = Array.isArray(parsed) ? parsed : parsed?.binds;
+  if (!Array.isArray(list)) throw new Error("Import must be a bind array or {binds:[...]}.");
+  if (!list.length) throw new Error("Import contains no binds.");
 
   const warnings = [];
   const seen = new Set();
-  const macros = [];
+  const binds = [];
   for (const entry of list) {
-    const clean = sanitizeMacro(entry, knownTypes);
+    const clean = sanitizeBind(entry, knownTypes);
     if (!clean) {
-      warnings.push("Skipped an entry that is not a macro object.");
+      warnings.push("Skipped an entry that is not a bind object.");
       continue;
     }
     if (seen.has(clean.id)) clean.id = generateId();
     seen.add(clean.id);
-    if (!clean.actions.length) warnings.push(`"${clean.name}" has no actions.`);
-    if (!clean.keybind.length) warnings.push(`"${clean.name}" has no keybind.`);
-    for (const action of clean.actions) {
-      if (action.unknown) warnings.push(`"${clean.name}" uses unknown action "${action.type}".`);
-    }
-    macros.push(clean);
+    if (clean.unknown) warnings.push(`Unknown action "${clean.type}" kept for forward compatibility.`);
+    if (!clean.keybind.length) warnings.push(`"${clean.type}" has no keybind.`);
+    binds.push(clean);
   }
-  if (!macros.length) throw new Error("Import contains no valid macros.");
-  return { macros, warnings };
+  if (!binds.length) throw new Error("Import contains no valid binds.");
+  return { binds, warnings };
 }
 
-// Groups of enabled macros sharing one chord, for conflict warnings.
-function detectConflicts(macros) {
+// Groups of enabled binds sharing one chord, for conflict warnings.
+function detectConflicts(binds) {
   const groups = new Map();
-  for (const macro of macros || []) {
-    if (!macro || macro.enabled === false) continue;
-    const key = conflictKey(macro.keybind);
+  for (const bind of binds || []) {
+    if (!bind || bind.enabled === false) continue;
+    const key = conflictKey(bind.keybind);
     if (!key) continue;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ id: macro.id, name: macro.name });
+    groups.get(key).push({ id: bind.id, type: bind.type });
   }
   const out = [];
   for (const [key, entries] of groups) {
-    if (entries.length > 1) out.push({ key, label: keybindToString(key.split("+")), macros: entries });
+    if (entries.length > 1) out.push({ key, label: keybindToString(key.split("+")), binds: entries });
   }
   return out;
 }
 
-function ensureUniqueIds(macros, incoming) {
-  const used = new Set((macros || []).map((m) => m.id));
-  for (const macro of incoming || []) {
-    if (used.has(macro.id)) macro.id = generateId();
-    used.add(macro.id);
+function ensureUniqueIds(binds, incoming) {
+  const used = new Set((binds || []).map((b) => b.id));
+  for (const bind of incoming || []) {
+    if (used.has(bind.id)) bind.id = generateId();
+    used.add(bind.id);
   }
   return incoming;
 }
 
 module.exports = {
   DEFAULT_SETTINGS,
-  MAX_ACTIONS_PER_MACRO,
   MAX_KEYBIND_KEYS,
   STATE_KEY,
   STATE_VERSION,
-  defaultPresets,
   detectConflicts,
   ensureUniqueIds,
   exportState,
+  freshState,
   generateId,
   importState,
   loadState,
-  sanitizeAction,
-  sanitizeMacro,
+  sanitizeBind,
   sanitizeSettings,
   saveState,
-  validateMacro
+  validateBind
 };

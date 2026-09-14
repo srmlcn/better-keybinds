@@ -116,13 +116,6 @@ const ACTION_DEFS = [
   },
   {
     category: "Utility",
-    description: "Pause before the next action.",
-    label: "Wait",
-    params: [{ default: 500, key: "ms", label: "Milliseconds", max: 15000, min: 0, type: "number" }],
-    type: "util.wait"
-  },
-  {
-    category: "Utility",
     description: "Open an https:// URL in the browser.",
     label: "Open URL",
     params: [{ key: "url", label: "URL", placeholder: "https://…", required: true, type: "url" }],
@@ -245,10 +238,7 @@ async function runAction(type, params, ctx) {
         const current = discord.getOutputVolume();
         const target = resolveToggle(current, values.a, values.b);
         if (target === null) return { message: "Invalid toggle levels.", ok: false };
-        const res = discord.setOutputVolume(target);
-        if (!res.ok) return res;
-        const from = current === null ? "?" : `${Math.round(current)}%`;
-        return { message: `Output volume ${from} -> ${target}%`, ok: true };
+        return discord.setOutputVolume(target);
       }
       case "input.set":
         return discord.setInputVolume(values.volume);
@@ -284,9 +274,6 @@ async function runAction(type, params, ctx) {
       case "util.toast":
         discord?.showToast?.(values.text || "Macro ran", "info");
         return { message: "Toast shown", ok: true };
-      case "util.wait":
-        await sleep(values.ms);
-        return { message: `Waited ${values.ms}ms`, ok: true };
       case "util.openUrl": {
         const opener = globalThis.open;
         if (typeof opener !== "function") return { message: "Cannot open URLs here.", ok: false };
@@ -301,17 +288,12 @@ async function runAction(type, params, ctx) {
   }
 }
 
-// Sequential execution. Utility failures don't abort; anything else does.
-async function runMacroActions(actions, ctx) {
-  const results = [];
-  for (const action of actions || []) {
-    const res = await runAction(action?.type, action?.params, ctx);
-    results.push({ message: res.message, ok: res.ok, type: action?.type || "unknown" });
-    if (!res.ok && !(action?.type || "").startsWith("util.")) {
-      return { aborted: true, ok: false, results };
-    }
+// Single-action bind execution.
+async function runBind(bind, ctx) {
+  if (!bind || typeof bind.type !== "string" || !bind.type) {
+    return { message: "Bind has no action selected.", ok: false };
   }
-  return { aborted: false, ok: results.every((r) => r.ok), results };
+  return runAction(bind.type, bind.params, ctx);
 }
 
 module.exports = {
@@ -322,7 +304,7 @@ module.exports = {
   getActionDef,
   resolveToggle,
   runAction,
-  runMacroActions,
+  runBind,
   sleep,
   validateAction
 };

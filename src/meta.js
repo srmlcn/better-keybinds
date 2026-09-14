@@ -4,9 +4,9 @@
 module.exports = {
   author: "Cognitive AI",
   authorId: "",
-  description: "Custom keybind macros: speaker volume 50/100 toggle, mute/deafen, navigation, messaging and utilities.",
+  description: "Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.",
   invite: "",
-  name: "KeybindMacros",
+  name: "BetterKeybinds",
   source: "",
   updateUrl: "",
   website: ""
