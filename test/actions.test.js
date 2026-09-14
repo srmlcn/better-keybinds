@@ -52,6 +52,8 @@ function fakeDiscord(overrides = {}) {
     getCurrentTextChannelId: () => "chan1",
     getInputVolume: () => 80,
     getOutputVolume: () => 50,
+    resolveInputVolume: () => ({ tracked: false, value: 80 }),
+    resolveOutputVolume: () => ({ tracked: false, value: 50 }),
     sent: [],
     setInputVolume: (v) => ({ message: `Input volume ${v}%`, ok: true }),
     setOutputVolume: (v) => ({ message: `Output volume ${v}%`, ok: true }),
@@ -72,14 +74,14 @@ describe("runAction", () => {
   it("adjusts relative to current", async () => {
     let got = null;
     const discord = fakeDiscord({
-      getOutputVolume: () => 90,
+      resolveOutputVolume: () => ({ tracked: false, value: 90 }),
       setOutputVolume: (v) => { got = v; return { ok: true }; }
     });
     await a.runAction("output.adjust", { delta: -25 }, { discord });
     assert.equal(got, 65);
   });
   it("fails adjust when current volume unreadable", async () => {
-    const discord = fakeDiscord({ getOutputVolume: () => null });
+    const discord = fakeDiscord({ resolveOutputVolume: () => ({ tracked: false, value: null }) });
     const res = await a.runAction("output.adjust", { delta: 5 }, { discord });
     assert.equal(res.ok, false);
   });

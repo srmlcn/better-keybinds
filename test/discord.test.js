@@ -89,11 +89,12 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(res.ok, false);
     assert.match(res.message, /didn't change — still 55%/);
   });
-  it("reports unverified when volume is unreadable", () => {
+  it("tracks the set value when volume is unreadable", () => {
     const { d } = stubbed({ readable: false });
     const res = d.setOutputVolume(75);
     assert.equal(res.ok, true);
-    assert.match(res.message, /couldn't confirm/);
+    assert.match(res.message, /Speaker volume → 75%/);
+    assert.deepEqual(d.resolveOutputVolume(), { tracked: true, value: 75 });
   });
   it("short-circuits redundant mute state", () => {
     const { d, dispatched } = stubbed();
@@ -119,6 +120,8 @@ describe("DiscordBridge with stubbed modules", () => {
     assert.equal(p.inputVolume, 80);
     assert.equal(p.selfMute, true);
     assert.equal(p.selfDeaf, false);
+    assert.equal(p.outputTracked, null);
+    assert.equal(p.inputTracked, null);
     assert.match(d.probeSummary(), /flux:ok media:ok/);
     assert.match(d.diagnosticsText("HEADER"), /HEADER[\s\S]*outputVolume: 55/);
   });
@@ -183,7 +186,7 @@ describe("DiscordBridge with stubbed modules", () => {
   });
 });
 
-describe("missing controls", () => {
+describe("tracked volumes", () => {
   function fluxOnlyBdApi() {
     const flux = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
     return {
@@ -201,14 +204,23 @@ describe("missing controls", () => {
       }
     };
   }
-  it("fails plainly without a readable store", () => {
+  it("tracks last-set values when unreadable", () => {
     const d = new DiscordBridge(fluxOnlyBdApi());
-    const out = d.setOutputVolume(60);
-    assert.equal(out.ok, false);
-    assert.match(out.message, /Couldn't find Discord's speaker controls/);
-    const inp = d.setInputVolume(60);
-    assert.equal(inp.ok, false);
-    assert.match(inp.message, /microphone controls/);
+    assert.deepEqual(d.resolveOutputVolume(), { tracked: false, value: null });
+    const first = d.setOutputVolume(60);
+    assert.equal(first.ok, true);
+    assert.match(first.message, /Speaker volume → 60%/);
+    assert.deepEqual(d.resolveOutputVolume(), { tracked: true, value: 60 });
+    d.setOutputVolume(30);
+    assert.deepEqual(d.resolveOutputVolume(), { tracked: true, value: 30 });
+    const inp = d.setInputVolume(70);
+    assert.equal(inp.ok, true);
+    assert.deepEqual(d.resolveInputVolume(), { tracked: true, value: 70 });
+  });
+  it("prefers live reads over tracked values", () => {
+    const { d } = stubbed();
+    d.setOutputVolume(75);
+    assert.deepEqual(d.resolveOutputVolume(), { tracked: false, value: 75 });
   });
 });
 
