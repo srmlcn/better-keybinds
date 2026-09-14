@@ -42,6 +42,7 @@ function stubbed({ stuck = false, readable = true, voiceThrows = false } = {}) {
     }
   };
   if (readable) store.getOutputVolume = () => vol;
+  else store.getOutputVolume = () => { throw new Error("unreadable"); };
   const voice = {
     setInputVolume: (v) => calls.push(["actions-in", v]),
     setOutputVolume: (v) => {
@@ -179,6 +180,67 @@ describe("DiscordBridge with stubbed modules", () => {
     const fp = d.fingerprint(new Store());
     assert.match(fp, /ownProp/);
     assert.match(fp, /protoGetter/);
+  });
+});
+
+describe("unloaded voice chunk", () => {
+  function fluxOnlyBdApi() {
+    const flux = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
+    return {
+      Webpack: {
+        Filters: {
+          byProps: (...props) => (m) => m && props.every((p) => m[p] !== undefined)
+        },
+        getModule: (filter) => {
+          try {
+            return filter(flux) ? flux : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    };
+  }
+  it("guides instead of claiming success", () => {
+    const d = new DiscordBridge(fluxOnlyBdApi());
+    const out = d.setOutputVolume(60);
+    assert.equal(out.ok, false);
+    assert.match(out.message, /aren't loaded yet/);
+    const inp = d.setInputVolume(60);
+    assert.equal(inp.ok, false);
+    assert.match(inp.message, /Voice & Video settings/);
+  });
+});
+
+describe("findByStrings fallback", () => {
+  function scanBdApi({ byStrings = null } = {}) {
+    const haystack = {
+      doThing(e) {
+        return `${e}NEEDLE_XYZ`;
+      }
+    };
+    const filters = {};
+    if (byStrings) filters.byStrings = byStrings;
+    return {
+      Webpack: {
+        Filters: filters,
+        getModule: (filter) => {
+          const candidates = [haystack, ...Object.values(haystack)];
+          return candidates.find((m) => { try { return filter(m); } catch { return false; } }) || null;
+        }
+      }
+    };
+  }
+  it("scans sources when Filters.byStrings is absent", () => {
+    const d = new DiscordBridge(scanBdApi());
+    const hit = d.findByStrings("NEEDLE_XYZ");
+    assert.equal(typeof hit, "object");
+    assert.equal(typeof hit.doThing, "function");
+    assert.equal(d.findByStrings("ABSENT_XYZ"), null);
+  });
+  it("scans sources when the built-in lookup misses", () => {
+    const d = new DiscordBridge(scanBdApi({ byStrings: () => () => false }));
+    assert.equal(typeof d.findByStrings("NEEDLE_XYZ"), "object");
   });
 });
 
