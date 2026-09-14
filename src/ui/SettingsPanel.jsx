@@ -586,6 +586,9 @@ function SettingsPanel(props) {
       ) : (
         <div style={s.small}>Status unavailable.</div>
       )}
+      {status && !status.mediaEngine ? (
+        <div style={s.small}>Voice controls aren't loaded — join a voice channel or open Voice & Video settings, then Refresh status.</div>
+      ) : null}
       <pre ref={logPreRef} style={s.logPre}>{log?.toText(80) || "(empty)"}</pre>
     </div>
   );

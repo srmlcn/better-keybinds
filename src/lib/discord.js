@@ -90,11 +90,14 @@ class DiscordBridge {
     try {
       const byStrings = BdApi?.Webpack?.Filters?.byStrings;
       if (byStrings && BdApi?.Webpack?.getModule) {
-        return BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+        const hit = BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+        if (hit) return hit;
       }
     } catch (error) {
       this.warn(`byStrings threw: ${error?.message || error}`);
     }
+    // Fallback source scan: BD's byStrings can miss function exports on
+    // object modules, so scan export function sources directly.
     const mentions = (fn) => {
       try {
         return typeof fn === "function" && strings.every((s) => fn.toString().includes(s));
@@ -304,6 +307,7 @@ class DiscordBridge {
       this.warn("output volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's speaker controls — Discord may have updated." };
     }
+    if (!this.getMediaEngineStore()) return this.unloadedVoice("output");
     const out = this.verifyVolume("Output", before, v);
     this.info(`output volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
     return out;
@@ -336,9 +340,19 @@ class DiscordBridge {
       this.warn("input volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's microphone controls — Discord may have updated." };
     }
+    if (!this.getMediaEngineStore()) return this.unloadedVoice("input");
     const out = this.verifyVolume("Input", before, v);
     this.info(`input volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
     return out;
+  }
+
+  // Discord loads voice code on demand. Without the store there is no
+  // handler for volume events and nothing to verify against, so a write
+  // now is almost certainly a no-op: say so instead of "couldn't confirm".
+  unloadedVoice(which) {
+    const message = "Discord's voice controls aren't loaded yet — join a voice channel or open Voice & Video settings, then try again.";
+    this.warn(`${which} volume: voice chunk unloaded`);
+    return { ok: false, message };
   }
 
   verifyVolume(label, before, wanted) {
