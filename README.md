@@ -8,9 +8,10 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 
 1. Install [BetterDiscord](https://betterdiscord.app).
 2. If you used the previous `KeybindMacros.plugin.js`, delete it from the plugins folder first (this release renames the plugin and starts fresh).
-3. Copy `dist/BetterKeybinds.plugin.js` into the BetterDiscord plugins folder (Discord Settings → BetterDiscord → Plugins → Open Plugin Folder).
-4. Enable **BetterKeybinds** in the plugin list.
-5. Open its Settings → **Add keybind** → pick an action → click the keybind button → press your chord → release.
+3. Build the plugin (`npm ci && npm run build`), or use a CI artifact named `BetterKeybinds-plugin`.
+4. Copy `dist/BetterKeybinds.plugin.js` into the BetterDiscord plugins folder (Discord Settings → BetterDiscord → Plugins → Open Plugin Folder).
+5. Enable **BetterKeybinds** in the plugin list.
+6. Open its Settings → **Add keybind** → pick an action → click the keybind button → press your chord → release.
 
 ## Quick start
 
