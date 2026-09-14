@@ -45,6 +45,7 @@ Every volume write is verified by reading the value back from Discord's own audi
 
 - `Speaker volume 50% → 100%` — applied and confirmed.
 - `Speaker volume didn't change — still 50%` — Discord rejected or ignored the write; the bind genuinely did not work.
+- `Discord's voice controls aren't loaded yet — ...` — join a voice channel or open Voice & Video settings, then retry. No write is possible until Discord loads its voice code.
 - `... (couldn't confirm)` — write sent but the value couldn't be read back.
 
 Discord's Settings → Voice & Video slider does not always repaint while open; close and reopen Settings to see the new position. The toast value is authoritative, not the slider.
