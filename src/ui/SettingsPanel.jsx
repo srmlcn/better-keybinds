@@ -232,6 +232,17 @@ function SettingsPanel(props) {
     } catch { /* non-fatal */ }
   }
 
+  function deepScan() {
+    let hits = [];
+    try {
+      hits = discord?.scanAudioCandidates?.() || [];
+    } catch (error) {
+      say("error", error?.message || String(error));
+      return;
+    }
+    say("info", hits.length ? `Deep scan found ${hits.length} audio candidate(s) — see the log.` : "Deep scan found no audio modules.");
+  }
+
   React.useEffect(() => {
     if (!log?.subscribe) return undefined;
     const unsub = log.subscribe(() => setLogTick((t) => t + 1));
@@ -558,6 +569,7 @@ function SettingsPanel(props) {
       <h3 style={s.sectionTitle}>Diagnostics</h3>
       <div style={s.toolbar}>
         <button onClick={() => setStatus(safeProbe())} style={s.btn}>Refresh status</button>
+        <button onClick={deepScan} style={s.btn}>Deep scan</button>
         <button onClick={copyDiagnostics} style={s.btnPrimary}>Copy diagnostics</button>
         <button onClick={() => { try { log?.clear(); } catch { /* ignore */ } setLogTick((t) => t + 1); }} style={s.btn}>Clear log</button>
         <label style={s.checkRow}>
@@ -587,7 +599,7 @@ function SettingsPanel(props) {
         <div style={s.small}>Status unavailable.</div>
       )}
       {status && !status.mediaEngine ? (
-        <div style={s.small}>Voice controls aren't loaded — join a voice channel or open Voice & Video settings, then Refresh status.</div>
+        <div style={s.small}>Speaker controls not found — hit Deep scan, then Copy diagnostics.</div>
       ) : null}
       <pre ref={logPreRef} style={s.logPre}>{log?.toText(80) || "(empty)"}</pre>
     </div>
