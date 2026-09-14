@@ -41,7 +41,7 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 
 ## Volume and the Discord settings slider
 
-Every volume write is verified by reading the value back from Discord's own audio store, and the toast reports ground truth:
+Every volume write is verified by reading the value back from Discord's own audio store, and the toast reports ground truth. Writes use Discord's own voice-action setters first, then Flux, then the store directly:
 
 - `Speaker volume 50% → 100%` — applied and confirmed.
 - `Speaker volume didn't change — still 50%` — Discord rejected or ignored the write; the bind genuinely did not work.
