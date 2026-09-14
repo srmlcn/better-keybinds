@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.2.0
+ * @version 2.3.0
  * @runAt idle
  */
 "use strict";
@@ -354,15 +354,19 @@ var require_discord = __commonJS({
       }
       findModule(filter, { searchExports = true } = {}) {
         const BdApi = this.BdApi;
-        try {
-          if (BdApi?.Webpack?.getModule) {
+        if (BdApi?.Webpack?.getModule) {
+          try {
             return BdApi.Webpack.getModule(filter, { searchExports }) || null;
+          } catch (error) {
+            this.warn(`Webpack.getModule threw: ${error?.message || error}`);
           }
-        } catch {
         }
-        try {
-          if (typeof BdApi?.findModule === "function") return BdApi.findModule(filter) || null;
-        } catch {
+        if (typeof BdApi?.findModule === "function") {
+          try {
+            return BdApi.findModule(filter) || null;
+          } catch (error) {
+            this.warn(`legacy findModule threw: ${error?.message || error}`);
+          }
         }
         return null;
       }
@@ -373,18 +377,49 @@ var require_discord = __commonJS({
           if (byProps && BdApi?.Webpack?.getModule) {
             return BdApi.Webpack.getModule(byProps(...props), { searchExports: true }) || null;
           }
-        } catch {
+        } catch (error) {
+          this.warn(`byProps threw: ${error?.message || error}`);
         }
         try {
           if (typeof BdApi?.findModuleByProps === "function") {
             return BdApi.findModuleByProps(...props) || null;
           }
-        } catch {
+        } catch (error) {
+          this.warn(`legacy findModuleByProps threw: ${error?.message || error}`);
         }
         return this.findModule(
           (m) => m && typeof m === "object" && props.every((p) => m[p] !== void 0),
           { searchExports: true }
         );
+      }
+      findByStrings(...strings) {
+        const BdApi = this.BdApi;
+        try {
+          const byStrings = BdApi?.Webpack?.Filters?.byStrings;
+          if (byStrings && BdApi?.Webpack?.getModule) {
+            return BdApi.Webpack.getModule(byStrings(...strings), { searchExports: true }) || null;
+          }
+        } catch (error) {
+          this.warn(`byStrings threw: ${error?.message || error}`);
+        }
+        const mentions = (fn) => {
+          try {
+            return typeof fn === "function" && strings.every((s) => fn.toString().includes(s));
+          } catch {
+            return false;
+          }
+        };
+        return this.findModule((m) => {
+          if (typeof m === "function") return mentions(m);
+          if (m && typeof m === "object") {
+            try {
+              return Object.values(m).some(mentions);
+            } catch {
+              return false;
+            }
+          }
+          return false;
+        }, { searchExports: true });
       }
       cached(key, resolver) {
         if (this.cache.has(key)) return this.cache.get(key);
@@ -399,11 +434,24 @@ var require_discord = __commonJS({
         }
         if (value) {
           this.cache.set(key, value);
-          this.debug(`webpack resolved ${key}`);
+          this.debug(`webpack resolved ${key} (${this.fingerprint(value)})`);
         } else {
           this.debug(`webpack miss ${key} (will retry)`);
         }
         return value;
+      }
+      // One-line shape summary so a wrong-module match is visible in the log.
+      fingerprint(mod, maxKeys = 40) {
+        if (!mod || typeof mod !== "object" && typeof mod !== "function") return String(mod);
+        let keys = [];
+        try {
+          keys = Object.keys(mod).sort();
+        } catch {
+          return "?";
+        }
+        const ctor = mod?.constructor?.name && mod.constructor.name !== "Object" ? ` ctor:${mod.constructor.name}` : "";
+        const shown = keys.slice(0, maxKeys).join(",");
+        return `${keys.length} keys${ctor} [${shown}]${keys.length > maxKeys ? "\u2026" : ""}`;
       }
       getFlux() {
         return this.cached("flux", () => this.findByProps("dispatch", "subscribe", "unsubscribe") || this.findModule((m) => typeof m?.dispatch === "function" && typeof m?.subscribe === "function"));
@@ -431,6 +479,20 @@ var require_discord = __commonJS({
       }
       getUserStore() {
         return this.cached("userStore", () => this.findByProps("getCurrentUser"));
+      }
+      // Module referencing the volume Flux event (actions/handler side).
+      // Resolved for diagnostics; never blind-called.
+      getAudioActions() {
+        return this.cached("audioActions", () => this.findByStrings("AUDIO_SET_OUTPUT_VOLUME"));
+      }
+      audioActionKeys(maxKeys = 12) {
+        const mod = this.getAudioActions();
+        if (!mod || typeof mod !== "object" && typeof mod !== "function") return [];
+        try {
+          return Object.keys(mod).sort().slice(0, maxKeys);
+        } catch {
+          return [];
+        }
       }
       dispatch(type, payload = {}) {
         const flux = this.getFlux();
@@ -731,6 +793,8 @@ var require_discord = __commonJS({
       probe() {
         const media = this.getMediaEngineStore();
         return {
+          audioActions: Boolean(this.getAudioActions()),
+          audioActionKeys: this.audioActionKeys(),
           channelActions: Boolean(this.getChannelActions()),
           channelRouter: Boolean(this.getChannelRouter()),
           discordUtils: this.hasGlobalSupport(),
@@ -773,6 +837,7 @@ var require_discord = __commonJS({
           `platform: ${p.platform}`,
           `flux: ${yn(p.flux)}`,
           `mediaEngine: ${yn(p.mediaEngine)} (methods: ${p.mediaMethods.join(", ") || "none"})`,
+          `audioActions: ${yn(p.audioActions)} (exports: ${p.audioActionKeys.join(", ") || "none"})`,
           `voiceActions: ${yn(p.voiceActions)}`,
           `channelActions: ${yn(p.channelActions)}`,
           `channelRouter: ${yn(p.channelRouter)}`,
@@ -1862,7 +1927,7 @@ ${log?.toText(150) || "(no log)"}`;
           width: 8
         }),
         statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
-        summary: { cursor: "pointer", fontSize: 13, fontWeight: 700 },
+        summary: { cursor: "pointer", fontSize: 12, fontWeight: 600, listStyle: "none", textAlign: "right" },
         title: { fontSize: 16, fontWeight: 700, margin: 0 },
         toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
       };
@@ -1943,7 +2008,7 @@ ${log?.toText(150) || "(no log)"}`;
         ), /* @__PURE__ */ React.createElement("button", { onClick: () => updateBind(bind.id, { keybind: [] }), style: s.btn, title: "Clear keybind" }, "\u2715"), /* @__PURE__ */ React.createElement("button", { onClick: () => testRun(bind.id), style: s.btn, title: "Run now" }, "Run"), /* @__PURE__ */ React.createElement("button", { onClick: () => removeBind(bind.id), style: s.btnDanger, title: "Delete bind" }, "Delete")), (def?.params || []).length ? /* @__PURE__ */ React.createElement("div", { style: { ...s.row, marginTop: 8 } }, (def.params || []).map((spec) => renderParam(bind, spec))) : null, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, marginTop: 8 } }, /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: bind.global, onChange: (e) => updateBind(bind.id, { global: e.target.checked }), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Global", globalSupported ? "" : " (unavailable)")), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: bind.toastOnRun, onChange: (e) => updateBind(bind.id, { toastOnRun: e.target.checked }), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Toast on run")), def?.description ? /* @__PURE__ */ React.createElement("span", { style: s.small }, def.description) : null), bind.unknown ? /* @__PURE__ */ React.createElement("div", { style: s.notice("warning") }, 'Unknown action "', bind.type, '" \u2014 kept for forward compatibility.') : null, errors.length ? /* @__PURE__ */ React.createElement("div", { style: s.notice("warning") }, errors.join(" ")) : null, result ? /* @__PURE__ */ React.createElement("div", { style: s.result(result.ok) }, result.message || (result.ok ? "OK" : "Failed")) : null);
       }
       const enabledCount = binds.filter((b) => b.enabled).length;
-      return /* @__PURE__ */ React.createElement("div", { style: s.root }, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("h2", { style: s.title }, "Better Keybinds"), /* @__PURE__ */ React.createElement("span", { style: s.badge(globalSupported), title: globalSupported ? "Global shortcuts available" : "DiscordNative unavailable" }, globalSupported ? "Global OK" : "In-app only")), /* @__PURE__ */ React.createElement("div", { style: s.small }, enabledCount, "/", binds.length, " binds enabled. Global binds also fire while Discord is unfocused."), conflicts.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.key, style: s.conflict }, "Conflict on ", c.label, ": ", c.binds.map((b) => bindLabel(binds.find((x) => x.id === b.id) || b)).join(", "))), notice ? /* @__PURE__ */ React.createElement("div", { style: s.notice(notice.kind) }, notice.text) : null, /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: addBind, style: s.btnPrimary }, "+ Add keybind")), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("details", { ref: ioDetailsRef, style: s.details }, /* @__PURE__ */ React.createElement("summary", { style: s.summary }, "Import / export / reset"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: doExport, style: s.btn }, "Export"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(false), style: s.btn }, "Import (append)"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(true), style: s.btn }, "Import (replace)"), /* @__PURE__ */ React.createElement("button", { onClick: doClear, style: s.btnDanger }, "Delete all")), /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("div", { style: s.root }, /* @__PURE__ */ React.createElement("div", { style: { ...s.row, justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("h2", { style: s.title }, "Better Keybinds"), /* @__PURE__ */ React.createElement("span", { style: s.badge(globalSupported), title: globalSupported ? "Global shortcuts available" : "DiscordNative unavailable" }, globalSupported ? "Global OK" : "In-app only")), /* @__PURE__ */ React.createElement("div", { style: s.small }, enabledCount, "/", binds.length, " binds enabled. Global binds also fire while Discord is unfocused."), conflicts.map((c) => /* @__PURE__ */ React.createElement("div", { key: c.key, style: s.conflict }, "Conflict on ", c.label, ": ", c.binds.map((b) => bindLabel(binds.find((x) => x.id === b.id) || b)).join(", "))), notice ? /* @__PURE__ */ React.createElement("div", { style: s.notice(notice.kind) }, notice.text) : null, /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: addBind, style: s.btnPrimary }, "+ Add keybind")), /* @__PURE__ */ React.createElement("details", { ref: ioDetailsRef, style: s.details }, /* @__PURE__ */ React.createElement("summary", { style: s.summary }, "Import / export / reset \u25BE"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: doExport, style: s.btn }, "Export"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(false), style: s.btn }, "Import (append)"), /* @__PURE__ */ React.createElement("button", { onClick: () => doImport(true), style: s.btn }, "Import (replace)"), /* @__PURE__ */ React.createElement("button", { onClick: doClear, style: s.btnDanger }, "Delete all")), /* @__PURE__ */ React.createElement(
         "textarea",
         {
           onChange: (e) => setIoText(e.target.value),
@@ -1952,13 +2017,13 @@ ${log?.toText(150) || "(no log)"}`;
           style: { ...s.input, marginTop: 6, width: "100%" },
           value: ioText
         }
-      )), /* @__PURE__ */ React.createElement("div", { style: s.small }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K."), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      )), /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 6 } }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K."), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
         try {
           log?.clear();
         } catch {
         }
         setLogTick((t) => t + 1);
-      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
+      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.audioActions) }), "AudioActions"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
     }
     module2.exports = SettingsPanel2;
   }
