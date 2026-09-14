@@ -50,6 +50,9 @@ function SettingsPanel(props) {
   const [status, setStatus] = React.useState(() => safeProbe());
   const [logTick, setLogTick] = React.useState(0);
   const [debugOn, setDebugOn] = React.useState(settings?.debugLogging !== false);
+  const [screenSources, setScreenSources] = React.useState([]);
+  const [gameSources, setGameSources] = React.useState([]);
+  const [captureLoad, setCaptureLoad] = React.useState("idle");
   const pressedRef = React.useRef(new Set());
   const collectedRef = React.useRef([]);
   const bindsRef = React.useRef(binds);
@@ -73,6 +76,39 @@ function SettingsPanel(props) {
       return false;
     }
   }, [discord]);
+
+  const needsCapture = binds.some((b) => b.type === "stream.startScreen" || b.type === "stream.startGame");
+
+  async function refreshCapture() {
+    setCaptureLoad("loading");
+    try {
+      let screens = [];
+      try {
+        screens = await discord?.listScreenSources?.() || [];
+      } catch {
+        screens = [];
+      }
+      let games = [];
+      try {
+        games = discord?.listGames?.() || [];
+      } catch {
+        games = [];
+      }
+      setScreenSources(Array.isArray(screens) ? screens : []);
+      setGameSources(Array.isArray(games) ? games : []);
+      setCaptureLoad(screens.length || games.length ? "ok" : "empty");
+    } catch {
+      setScreenSources([]);
+      setGameSources([]);
+      setCaptureLoad("error");
+    }
+  }
+
+  React.useEffect(() => {
+    if (!needsCapture) return undefined;
+    void refreshCapture();
+    return undefined;
+  }, [needsCapture, discord]);
 
   function commit(next) {
     setBinds(next);
@@ -411,6 +447,73 @@ function SettingsPanel(props) {
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
+        </label>
+      );
+    }
+    if (spec.type === "screen") {
+      const current = String(value || "");
+      const options = [{ id: "", name: "Auto (primary screen)" }, ...screenSources];
+      if (current && !options.some((o) => o.id === current)) {
+        options.push({ id: current, name: bind.params?.sourceName || current });
+      }
+      return (
+        <label key={spec.key} style={{ ...s.param, flex: "1 1 260px" }}>
+          <span style={s.label}>{spec.label}</span>
+          <select
+            onChange={(e) => {
+              const id = e.target.value;
+              const hit = screenSources.find((o) => o.id === id);
+              updateBind(bind.id, { params: { ...bind.params, sourceId: id, sourceName: hit?.name || "" } });
+            }}
+            style={{ ...s.input, flex: 1 }}
+            value={current}
+          >
+            {options.map((o) => (
+              <option key={o.id || "auto"} value={o.id}>{o.name}</option>
+            ))}
+          </select>
+          <button onClick={() => void refreshCapture()} style={s.btn} type="button">
+            {captureLoad === "loading" ? "…" : "Refresh"}
+          </button>
+        </label>
+      );
+    }
+    if (spec.type === "game") {
+      const current = String(value || "");
+      const options = [
+        { pid: "", name: "Auto (detected game)" },
+        ...gameSources.filter((g) => g.pid != null).map((g) => ({ pid: String(g.pid), name: g.name }))
+      ];
+      const unique = [];
+      const seen = new Set();
+      for (const o of options) {
+        const key = o.pid || `name:${o.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(o);
+      }
+      if (current && !unique.some((o) => o.pid === current)) {
+        unique.push({ pid: current, name: bind.params?.gameName || `PID ${current}` });
+      }
+      return (
+        <label key={spec.key} style={{ ...s.param, flex: "1 1 260px" }}>
+          <span style={s.label}>{spec.label}</span>
+          <select
+            onChange={(e) => {
+              const pid = e.target.value;
+              const hit = gameSources.find((g) => String(g.pid) === pid);
+              updateBind(bind.id, { params: { ...bind.params, gameName: hit?.name || "", gamePid: pid } });
+            }}
+            style={{ ...s.input, flex: 1 }}
+            value={current}
+          >
+            {unique.map((o) => (
+              <option key={o.pid || "auto"} value={o.pid}>{o.name}</option>
+            ))}
+          </select>
+          <button onClick={() => void refreshCapture()} style={s.btn} type="button">
+            {captureLoad === "loading" ? "…" : "Refresh"}
+          </button>
         </label>
       );
     }

@@ -127,13 +127,27 @@ describe("stream actions", () => {
     assert.equal((await a.runBind({ params: {}, type: "stream.stop" }, { discord })).message, "Stream stopped.");
     assert.equal((await a.runBind({ params: {}, type: "stream.toggleGame" }, { discord })).message, "Streaming Doom");
   });
-  it("validates stream actions take no params", () => {
+  it("validates stream actions take optional capture params", () => {
     assert.deepEqual(a.validateAction("stream.startGame", {}), []);
-    assert.deepEqual(a.validateAction("stream.stop", {}), []);
+    assert.deepEqual(a.validateAction("stream.startScreen", {}), []);
+    assert.deepEqual(a.validateAction("stream.startScreen", { sourceId: "screen:1:0" }), []);
+    assert.deepEqual(a.validateAction("stream.startGame", { gamePid: "4242" }), []);
     assert.equal(a.getActionDef("stream.toggleGame").type, "stream.startGame");
     assert.equal(a.getActionDef("stream.startGame").label, "Toggle game stream");
     assert.equal(a.getActionDef("stream.startScreen").label, "Toggle screen stream");
     assert.ok(a.actionTypes().includes("stream.startScreen"));
     assert.ok(a.actionTypes().includes("stream.toggleGame"));
+  });
+  it("passes saved capture targets to the bridge", async () => {
+    let screen = null;
+    let game = null;
+    const discord = fakeDiscord({
+      toggleGameStream: async (opts) => { game = opts; return { message: "ok", ok: true }; },
+      toggleScreenStream: async (opts) => { screen = opts; return { message: "ok", ok: true }; }
+    });
+    await a.runBind({ params: { sourceId: "screen:1:0", sourceName: "Screen 2" }, type: "stream.startScreen" }, { discord });
+    await a.runBind({ params: { gameName: "Doom", gamePid: "4242" }, type: "stream.startGame" }, { discord });
+    assert.deepEqual(screen, { sourceId: "screen:1:0", sourceName: "Screen 2" });
+    assert.deepEqual(game, { name: "Doom", pid: "4242" });
   });
 });

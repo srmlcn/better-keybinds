@@ -898,14 +898,79 @@ class DiscordBridge {
     return { detection, game: null, reason: detection === false ? "disabled" : "none" };
   }
 
+  classifySource(source) {
+    if (!source || source.id == null) return null;
+    const id = String(source.id);
+    const type = String(source.type || "").toLowerCase();
+    const name = String(source.name || "");
+    const displayId = source.display_id ?? source.displayId;
+    if (
+      type === "screen" || type === "monitor" || type === "display"
+      || id.startsWith("screen:") || id.startsWith("monitor:") || id.startsWith("desktop:")
+      || displayId != null && displayId !== ""
+      || /^(entire\s+)?(screen|display|monitor)\b/i.test(name)
+    ) return "screen";
+    if (type === "window" || id.startsWith("window:")) return "window";
+    return type || "unknown";
+  }
+
+  isScreenSource(source) {
+    return this.classifySource(source) === "screen";
+  }
+
+  screenIndex(source) {
+    const id = String(source?.id || "");
+    const match = /^screen:(\d+)/i.exec(id) || /^monitor:(\d+)/i.exec(id);
+    if (match) return Number(match[1]);
+    return 999;
+  }
+
+  listScreenSourcesFrom(sources) {
+    if (!Array.isArray(sources)) return [];
+    return sources.filter((s) => this.isScreenSource(s));
+  }
+
+  listGames() {
+    const store = this.getRunningGameStore();
+    const seen = new Set();
+    const out = [];
+    const push = (game) => {
+      if (!game || game.hidden) return;
+      const pid = Number(game.pid);
+      const name = String(game.name || "").trim();
+      const key = Number.isFinite(pid) && pid > 0 ? `pid:${pid}` : name.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push({
+        exePath: String(game.exePath || ""),
+        name: name || "Game",
+        pid: Number.isFinite(pid) && pid > 0 ? pid : null
+      });
+    };
+    try {
+      push(store?.getVisibleGame?.());
+    } catch { /* ignore */ }
+    let running = [];
+    try {
+      running = store?.getRunningGames?.() || [];
+    } catch { /* ignore */ }
+    if (!Array.isArray(running)) running = [];
+    const usable = running.filter((g) => g && !g.hidden);
+    usable.sort((a, b) => (Number(b.lastFocused) || 0) - (Number(a.lastFocused) || 0));
+    for (const game of usable) push(game);
+    return out;
+  }
+
   // Match a detected game to a desktop capture source: process ID first,
   // then game/exe name against window titles.
   matchGameSource(sources, game) {
     if (!Array.isArray(sources) || !game) return null;
     const pid = Number(game.pid);
     if (Number.isFinite(pid) && pid > 0) {
-      const byPid = sources.find((s) => Number(s?.sourcePid) === pid);
+      const byPid = sources.find((s) => Number(s?.sourcePid ?? s?.pid) === pid);
       if (byPid) return byPid;
+      const byId = sources.find((s) => String(s?.id || "").includes(`:${pid}:`) || String(s?.id || "").endsWith(`:${pid}`));
+      if (byId) return byId;
     }
     const norm = (s) => String(s || "").toLowerCase().replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, " ").trim();
     const exeBase = String(game.exePath || "").split(/[\\/]/).pop();
@@ -920,37 +985,84 @@ class DiscordBridge {
     return null;
   }
 
-  pickScreenSource(sources) {
-    if (!Array.isArray(sources)) return null;
-    return sources.find((s) => s?.type === "screen" || String(s?.id || "").startsWith("screen:")) || null;
+  // Primary display first (screen:0 / "Screen 1"), then a saved id/name, then any screen.
+  pickScreenSource(sources, prefer = {}) {
+    const screens = this.listScreenSourcesFrom(sources);
+    if (!screens.length) return null;
+    const wantedId = String(prefer.sourceId || "").trim();
+    if (wantedId) {
+      const exact = screens.find((s) => String(s.id) === wantedId);
+      if (exact) return exact;
+    }
+    const wantedName = String(prefer.sourceName || "").trim().toLowerCase();
+    if (wantedName) {
+      const named = screens.find((s) => String(s.name || "").trim().toLowerCase() === wantedName);
+      if (named) return named;
+    }
+    const primary = screens.find((s) => /^screen:0(?::|$)/i.test(String(s.id)))
+      || screens.find((s) => /entire|primary/i.test(String(s.name || "")))
+      || screens.find((s) => /^(screen|display|monitor)\s*1\b/i.test(String(s.name || "")));
+    if (primary) return primary;
+    return screens.slice().sort((a, b) => this.screenIndex(a) - this.screenIndex(b))[0];
+  }
+
+  async listScreenSources() {
+    try {
+      return this.listScreenSourcesFrom(await this.getDesktopSources()).map((s) => ({
+        id: String(s.id),
+        name: String(s.name || s.id)
+      }));
+    } catch (error) {
+      this.debug(`listScreenSources: ${error?.message || error}`);
+      return [];
+    }
+  }
+
+  mergeSources(into, list) {
+    const seen = into._seen || (into._seen = new Set(into.map((s) => s?.id).filter(Boolean)));
+    for (const source of list || []) {
+      if (!source?.id || seen.has(source.id)) continue;
+      seen.add(source.id);
+      into.push(source);
+    }
+    return into;
   }
 
   // Discord's current enumerator is:
   //   getDesktopSources(mediaEngine, isWindows, ["screen","window"], extra)
-  // Older builds omit the isWindows flag. Never call with a null engine —
-  // that path reads `.supports` and throws.
+  // Older builds omit the isWindows flag. Empty arrays are not success —
+  // they used to skip native/preview fallbacks and hide screens.
+  // Never call with a null engine — that path reads `.supports` and throws.
   async getDesktopSources() {
+    const collected = [];
     const engine = this.getMediaEngine();
     const fn = this.findCodeFunction("desktop sources");
-    const types = ["screen", "window"];
     const isWindows = this.getPlatform() === "win32";
     let lastError = null;
+    const tryEnumerator = async (args, label) => {
+      if (!fn || !engine) return;
+      try {
+        const sources = await fn(...args);
+        if (Array.isArray(sources) && sources.length) {
+          this.debug(`desktop sources via ${label}: ${sources.length}`);
+          this.mergeSources(collected, sources);
+          return;
+        }
+        if (Array.isArray(sources)) this.debug(`desktop sources via ${label}: empty`);
+        else lastError = new Error("capture-bad-result");
+      } catch (error) {
+        lastError = error;
+        this.debug(`desktop sources via ${label} threw: ${error?.message || error}`);
+      }
+    };
     if (fn && engine) {
-      const attempts = [
-        { args: [engine, isWindows, types, null], label: `enumerator-winflag(arity ${fn.length})` },
-        { args: [engine, types, null], label: "enumerator-legacy" }
-      ];
-      for (const attempt of attempts) {
-        try {
-          const sources = await fn(...attempt.args);
-          if (Array.isArray(sources)) {
-            this.debug(`desktop sources via ${attempt.label}: ${sources.length}`);
-            return sources;
-          }
-          lastError = new Error("capture-bad-result");
-        } catch (error) {
-          lastError = error;
-          this.debug(`desktop sources via ${attempt.label} threw: ${error?.message || error}`);
+      const mixed = ["screen", "window"];
+      await tryEnumerator([engine, isWindows, mixed, null], `enumerator-winflag(arity ${fn.length})`);
+      if (!collected.length) await tryEnumerator([engine, mixed, null], "enumerator-legacy");
+      if (!this.listScreenSourcesFrom(collected).length) {
+        await tryEnumerator([engine, isWindows, ["screen"], null], "enumerator-screens-winflag");
+        if (!this.listScreenSourcesFrom(collected).length) {
+          await tryEnumerator([engine, ["screen"], null], "enumerator-screens-legacy");
         }
       }
     } else if (fn && !engine) {
@@ -958,12 +1070,36 @@ class DiscordBridge {
     } else if (!fn) {
       this.debug("desktop sources: enumerator missing");
     }
-    const previews = await this.getPreviewSources();
-    if (previews.length) {
-      this.debug(`desktop sources via previews: ${previews.length}`);
-      return previews;
+    if (!collected.length || !this.listScreenSourcesFrom(collected).length) {
+      this.mergeSources(collected, await this.getNativeDesktopSources());
     }
+    if (!collected.length || !this.listScreenSourcesFrom(collected).length) {
+      const previews = await this.getPreviewSources();
+      if (previews.length) {
+        this.debug(`desktop sources via previews: ${previews.length}`);
+        this.mergeSources(collected, previews);
+      }
+    }
+    if (collected.length) return collected;
     throw lastError || new Error("capture-unavailable");
+  }
+
+  async getNativeDesktopSources() {
+    try {
+      const capturer = globalThis.DiscordNative?.desktopCapturer;
+      if (!capturer || typeof capturer.getSources !== "function") return [];
+      const list = await capturer.getSources({
+        thumbnailSize: { height: 0, width: 0 },
+        types: ["screen", "window"]
+      });
+      if (Array.isArray(list) && list.length) {
+        this.debug(`desktop sources via DiscordNative.desktopCapturer: ${list.length}`);
+        return list;
+      }
+    } catch (error) {
+      this.debug(`desktopCapturer.getSources threw: ${error?.message || error}`);
+    }
+    return [];
   }
 
   async getPreviewSources() {
@@ -1045,19 +1181,24 @@ class DiscordBridge {
     return { ok: false, message: `Couldn't start streaming ${label} — try again.` };
   }
 
-  async startGameStream() {
+  async startGameStream(prefer = {}) {
     const target = await this.resolveStreamTarget();
     if (target.error) return { ok: false, message: target.error };
     if (this.getSelfStream()) return { ok: true, message: "Already streaming — stop first to switch." };
-    const { detection, game } = this.pickGame();
+    const wantedPid = Number(prefer.pid);
+    const saved = Number.isFinite(wantedPid) && wantedPid > 0
+      ? (this.listGames().find((g) => g.pid === wantedPid) || { name: String(prefer.name || "").trim() || "your game", pid: wantedPid })
+      : null;
+    const picked = saved ? null : this.pickGame();
+    const game = saved || picked?.game;
     if (!game) {
-      if (detection === false) {
+      if (picked?.detection === false) {
         return { ok: false, message: "Game detection is off — turn it on in Discord Settings → Game Activity." };
       }
       if (!this.getRunningGameStore()) {
         return { ok: false, message: "Couldn't reach Discord's game detection — Discord may have updated." };
       }
-      return { ok: false, message: "No game detected — launch a game first." };
+      return { ok: false, message: "No game detected — pick one in this keybind, or launch a game first." };
     }
     let sources;
     try {
@@ -1075,7 +1216,7 @@ class DiscordBridge {
     return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label, pid: game.pid ?? null, source });
   }
 
-  async startScreenStream() {
+  async startScreenStream(prefer = {}) {
     const target = await this.resolveStreamTarget();
     if (target.error) return { ok: false, message: target.error };
     if (this.getSelfStream()) return { ok: true, message: "Already streaming — stop first to switch." };
@@ -1086,9 +1227,10 @@ class DiscordBridge {
       this.warn(`desktop sources failed: ${error?.message || error}`);
       return { ok: false, message: "Couldn't reach screen capture — reload Discord (Ctrl+R) and try again." };
     }
-    const source = this.pickScreenSource(sources);
-    if (!source) return { ok: false, message: "Couldn't find your screen to share." };
-    return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label: "your screen", source });
+    const source = this.pickScreenSource(sources, prefer);
+    if (!source) return { ok: false, message: "Couldn't find your screen to share. Open this keybind and pick a display." };
+    const label = source.name || "your screen";
+    return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label, source });
   }
 
   async stopOwnStream() {
@@ -1112,12 +1254,12 @@ class DiscordBridge {
     return { ok: false, message: "Couldn't stop the stream — try again." };
   }
 
-  async toggleGameStream() {
-    return this.getSelfStream() ? this.stopOwnStream() : this.startGameStream();
+  async toggleGameStream(prefer = {}) {
+    return this.getSelfStream() ? this.stopOwnStream() : this.startGameStream(prefer);
   }
 
-  async toggleScreenStream() {
-    return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream();
+  async toggleScreenStream(prefer = {}) {
+    return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream(prefer);
   }
 
   // Probe native helper modules for capture/voice APIs (keys only, cached).
@@ -1392,7 +1534,8 @@ class DiscordBridge {
       engine,
       gameName,
       games,
-      ready: runningGame && store && startFn && stopFn && sourcesFn,
+      nativeCapturer: Boolean(globalThis.DiscordNative?.desktopCapturer?.getSources),
+      ready: runningGame && store && startFn && stopFn && (sourcesFn || Boolean(globalThis.DiscordNative?.desktopCapturer?.getSources)),
       runningGame,
       selfStream: Boolean(this.getSelfStream()),
       settings,
@@ -1506,7 +1649,7 @@ class DiscordBridge {
       `selfMute: ${val(p.selfMute)}`,
       `selfDeaf: ${val(p.selfDeaf)}`,
       `streamStores: runningGame ${yn(s.runningGame)}, streaming ${yn(s.store)}, settings ${yn(s.settings)}, channel ${yn(s.channel)}, voiceState ${yn(s.voiceState)}`,
-      `streamFns: start ${yn(s.startFn)}, stop ${yn(s.stopFn)}, sources ${yn(s.sourcesFn)}`,
+      `streamFns: start ${yn(s.startFn)}, stop ${yn(s.stopFn)}, sources ${yn(s.sourcesFn)}, nativeCapturer ${yn(s.nativeCapturer)}`,
       `streamEngine: ${yn(s.engine)}`,
       `games: ${s.games ?? "unreadable"}${s.gameName ? ` (visible: ${s.gameName})` : ""}`,
       `voiceChannel: ${s.voiceChannel || "none"}`,

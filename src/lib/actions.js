@@ -109,16 +109,16 @@ const ACTION_DEFS = [
   },
   {
     category: "Streaming",
-    description: "Start streaming your detected game, or stop if already live.",
+    description: "Start streaming a detected game, or stop if already live. Pick a game in this row, or leave Auto.",
     label: "Toggle game stream",
-    params: [],
+    params: [{ default: "", key: "gamePid", label: "Game", type: "game" }],
     type: "stream.startGame"
   },
   {
     category: "Streaming",
-    description: "Start streaming your screen, or stop if already live.",
+    description: "Start streaming a screen, or stop if already live. Pick a display in this row, or leave Auto for the primary screen.",
     label: "Toggle screen stream",
-    params: [],
+    params: [{ default: "", key: "sourceId", label: "Screen", type: "screen" }],
     type: "stream.startScreen"
   },
   {
@@ -213,6 +213,10 @@ function coerceParams(def, params) {
       values[spec.key] = value;
       continue;
     }
+    if (spec.type === "screen" || spec.type === "game") {
+      values[spec.key] = String(raw ?? "").trim();
+      continue;
+    }
     if (spec.type === "url") {
       const s = String(raw ?? "").trim();
       if (!s && spec.required) {
@@ -288,9 +292,15 @@ async function runAction(type, params, ctx) {
         return discord.disconnectVoice();
       case "stream.startGame":
       case "stream.toggleGame":
-        return await discord.toggleGameStream();
+        return await discord.toggleGameStream({
+          name: String(params?.gameName || "").trim(),
+          pid: values.gamePid
+        });
       case "stream.startScreen":
-        return await discord.toggleScreenStream();
+        return await discord.toggleScreenStream({
+          sourceId: values.sourceId,
+          sourceName: String(params?.sourceName || "").trim()
+        });
       case "stream.stop":
         return await discord.stopOwnStream();
       case "nav.goToChannel":

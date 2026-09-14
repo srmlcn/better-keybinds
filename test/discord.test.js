@@ -632,6 +632,17 @@ describe("source matching", () => {
     assert.equal(d.pickScreenSource([{ id: "abc", type: "screen" }]).id, "abc");
     assert.equal(d.pickScreenSource([{ id: "window:1:0" }]), null);
   });
+  it("prefers the primary display and saved ids", () => {
+    const screens = [
+      { id: "screen:1:0", name: "Screen 2" },
+      { id: "screen:0:0", name: "Screen 1" }
+    ];
+    assert.equal(d.pickScreenSource(screens).id, "screen:0:0");
+    assert.equal(d.pickScreenSource(screens, { sourceId: "screen:1:0" }).id, "screen:1:0");
+    assert.equal(d.pickScreenSource(screens, { sourceId: "stale", sourceName: "Screen 2" }).id, "screen:1:0");
+    assert.equal(d.pickScreenSource([{ id: "disp", name: "Entire Screen" }]).id, "disp");
+    assert.equal(d.pickScreenSource([{ display_id: "9", id: "x", name: "Display" }]).id, "x");
+  });
 });
 
 describe("resolveStreamKey", () => {
@@ -667,14 +678,14 @@ describe("getDesktopSources", () => {
     const d = new DiscordBridge({});
     d.cache.set("mediaEngine", { getMediaEngine: () => ({ id: "engine" }) });
     d.cache.set("code:desktop sources", async (media, second, third) => {
-      calls.push([Boolean(media), typeof second, Array.isArray(third)]);
+      calls.push([Boolean(media), typeof second, Array.isArray(third), Array.isArray(third) ? third.join(",") : ""]);
       if (typeof second !== "boolean") throw new Error("Invalid argument at index 0: type mismatch");
-      return [{ id: "window:1:0", name: "Doom" }];
+      return [{ id: "window:1:0", name: "Doom" }, { id: "screen:0:0", name: "Screen 1" }];
     });
     const sources = await d.getDesktopSources();
     assert.equal(sources[0].id, "window:1:0");
-    assert.deepEqual(calls[0], [true, "boolean", true]);
-    assert.equal(calls.length, 1);
+    assert.equal(d.pickScreenSource(sources).id, "screen:0:0");
+    assert.deepEqual(calls[0], [true, "boolean", true, "screen,window"]);
   });
   it("falls back to the legacy 3-arg signature", async () => {
     const d = new DiscordBridge({});
@@ -697,6 +708,36 @@ describe("getDesktopSources", () => {
     const sources = await d.getDesktopSources();
     assert.deepEqual(sources.map((s) => s.id), ["window:2:0", "screen:0:0"]);
     assert.equal(sources[0].type, "window");
+  });
+  it("does not treat empty enumerator results as success", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("mediaEngine", {
+      getMediaEngine: () => ({
+        getScreenPreviews: async () => [{ id: "screen:0:0", name: "Screen 1" }],
+        getWindowPreviews: async () => []
+      })
+    });
+    d.cache.set("code:desktop sources", async () => []);
+    const sources = await d.getDesktopSources();
+    assert.equal(sources[0].id, "screen:0:0");
+  });
+  it("uses DiscordNative.desktopCapturer when webpack misses screens", async () => {
+    const prev = globalThis.DiscordNative;
+    globalThis.DiscordNative = {
+      desktopCapturer: {
+        getSources: async () => [{ id: "screen:0:0", name: "Entire Screen" }]
+      }
+    };
+    try {
+      const d = new DiscordBridge({});
+      d.cache.set("mediaEngine", { getMediaEngine: () => ({ id: "engine" }) });
+      d.cache.set("code:desktop sources", async () => [{ id: "window:1:0", name: "App" }]);
+      const sources = await d.getDesktopSources();
+      assert.ok(sources.some((s) => s.id === "screen:0:0"));
+      assert.ok(sources.some((s) => s.id === "window:1:0"));
+    } finally {
+      globalThis.DiscordNative = prev;
+    }
   });
   it("does not call the enumerator with a null engine", async () => {
     let called = false;
@@ -774,9 +815,37 @@ describe("stream actions", () => {
     const { d } = streamBridge({ sources: [{ id: "window:1:0", name: "App" }, { id: "screen:0:0", name: "Screen 1" }] });
     const res = await d.startScreenStream();
     assert.equal(res.ok, true);
-    assert.equal(res.message, "Streaming your screen");
+    assert.equal(res.message, "Streaming Screen 1");
     const noscreen = streamBridge({ sources: [{ id: "window:1:0", name: "App" }] });
     assert.match((await noscreen.d.startScreenStream()).message, /Couldn't find your screen/);
+  });
+  it("uses a saved screen id when present", async () => {
+    const { calls, d } = streamBridge({
+      sources: [
+        { id: "screen:0:0", name: "Screen 1" },
+        { id: "screen:1:0", name: "Screen 2" }
+      ]
+    });
+    const res = await d.startScreenStream({ sourceId: "screen:1:0" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Screen 2");
+    assert.equal(calls[0][2].sourceId, "screen:1:0");
+  });
+  it("uses a saved game pid when auto would pick another", async () => {
+    const { calls, d } = streamBridge({
+      games: [
+        { lastFocused: 99, name: "Launcher", pid: 1, isLauncher: true },
+        { lastFocused: 1, name: "Doom", pid: 4242 }
+      ],
+      sources: [
+        { id: "window:1:0", name: "Launcher", sourcePid: 1 },
+        { id: "window:2:0", name: "DOOM", sourcePid: 4242 }
+      ]
+    });
+    const res = await d.startGameStream({ pid: 4242, name: "Doom" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Doom");
+    assert.equal(calls[0][2].sourceId, "window:2:0");
   });
   it("stops the own stream and no-ops when idle", async () => {
     const idle = streamBridge({});
@@ -792,7 +861,7 @@ describe("stream actions", () => {
     const live = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
     assert.equal((await live.d.toggleGameStream()).message, "Stream stopped.");
     const screenIdle = streamBridge({ sources: [{ id: "screen:0:0", name: "Screen 1" }] });
-    assert.equal((await screenIdle.d.toggleScreenStream()).message, "Streaming your screen");
+    assert.equal((await screenIdle.d.toggleScreenStream()).message, "Streaming Screen 1");
     const screenLive = streamBridge({ selfStream: { channelId: "vc1", guildId: "g1", ownerId: "u1", streamType: "guild" } });
     assert.equal((await screenLive.d.toggleScreenStream()).message, "Stream stopped.");
   });

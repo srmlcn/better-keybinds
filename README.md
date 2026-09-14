@@ -27,7 +27,7 @@ Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies)
 | Output volume | Set / Adjust / Toggle | Toggle flips between levels A and B; default 50/100 |
 | Input volume | Set / Adjust | Mic level, same 0–100 scale |
 | Self voice | Toggle/Set mute, Toggle/Set deafen, Disconnect | Set is a no-op when already in that state |
-| Streaming | Toggle game, Toggle screen, Stop | Streams to your current voice channel |
+| Streaming | Toggle game, Toggle screen, Stop | Game/screen picker on the bind; Auto uses detection / primary display |
 | Channels | Go to channel | Needs Guild + Channel ID (Developer Mode → Copy ID) |
 | Messages | Send message | Current channel, or a saved channel ID |
 | Utility | Toast, Open URL | Toast is handy for testing that a chord fires |
@@ -60,13 +60,14 @@ Discord's Settings → Voice & Video slider does not always repaint while open; 
 The Streaming actions Go Live in your current voice channel and reuse Discord's own streaming controls, so quality/sound defaults match the normal Go Live button. Requirements:
 
 - You're in a voice channel (server or DM call).
-- For **Toggle game stream**: Discord detects your game. Detection comes from Settings → **Game Activity** — if your game isn't listed there as "Now playing", start the game first, or add it manually in Game Activity.
+- For **Toggle game stream**: Discord's Game Activity list, or a game you pick on that keybind row. If Auto misses, hit **Refresh** and choose the game.
 - The game window isn't minimized (minimized windows often disappear from capture sources).
+- For **Toggle screen stream**: Auto uses the primary display. If that fails, pick a screen on the keybind row and Refresh.
 
 Behavior:
 
-- **Toggle game stream** picks your foreground game, or the most recently focused running game, and streams that window — no picker. Press again to stop.
-- **Toggle screen stream** streams your primary screen. Press again to stop.
+- **Toggle game stream** streams the selected game, or Auto (foreground / most recently focused). Press again to stop.
+- **Toggle screen stream** streams the selected display, or Auto (primary screen, `screen:0`). Press again to stop.
 - **Stop streaming** ends your stream; it's a no-op when you're not live.
 
 Every stream start/stop is verified against Discord's live stream state before the toast reports success. Toggling while already live stops the current stream (game or screen).
@@ -115,6 +116,8 @@ Yes — three layers, easiest first:
    - `BetterKeybinds.discord.getOutputVolume()` — current speaker value
    - `BetterKeybinds.discord.probeSummary()` — one-line module status
    - `BetterKeybinds.discord.pickGame()` — detected game for streaming
+   - `BetterKeybinds.discord.listGames()` — Game Activity candidates for the picker
+   - `BetterKeybinds.discord.listScreenSources()` — displays for the screen picker
    - `BetterKeybinds.discord.getSelfStream()` — your active stream, if any
    - `BetterKeybinds.runBindById("b_…", "console")` — run a bind by ID
 3. **Debug log file**: Settings → BetterDiscord → Developer → **Debug Logs** writes all console output to `debug.log` in the BetterDiscord folder (`%appdata%/BetterDiscord` on Windows, `~/.config/BetterDiscord` on Linux). Turn off when done — it grows fast.
@@ -129,8 +132,9 @@ If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps
 - **"Couldn't reach" toast**: Discord renamed internals. Check console (`Ctrl+Shift+I`) for `[BetterKeybinds]` lines.
 - **Global shows In-app only**: native module blocked or unsupported client — in-app still works. Re-check after Discord restart.
 - **Global chord does nothing on Linux/Mac**: platform keycodes come from Discord's key map with a Windows fallback; unresolvable keys are reported.
-- **"No game detected" toast**: Discord doesn't see a running game. Check Settings → Game Activity for "Now playing"; add the game manually if needed.
+- **"No game detected" toast**: Discord doesn't see a running game. Open the keybind, hit Refresh, and pick the game; or check Settings → Game Activity for "Now playing".
 - **"Couldn't find a window" toast**: the game was detected but has no capture source. Unminimize/restore the game window and retry.
+- **"Couldn't find your screen" toast**: Auto couldn't classify a display. Open the keybind, hit Refresh, and pick a screen. Default is the primary display (`screen:0`).
 - **"Couldn't reach screen capture" toast**: Discord's capture enumerator rejected the call. Reload Discord (Ctrl+R) and retry; if it persists, Copy diagnostics.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
 - Console access: the running instance is exposed as `globalThis.BetterKeybinds`.
