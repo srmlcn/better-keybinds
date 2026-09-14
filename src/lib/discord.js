@@ -79,11 +79,20 @@ class DiscordBridge {
   }
 
   getMediaEngineStore() {
-    return this.cached("mediaEngine", () => (
-      this.findByProps("getOutputVolume", "setOutputVolume")
-      || this.findByProps("getMediaEngine", "getOutputVolume")
-      || this.findModule((m) => typeof m?.getOutputVolume === "function" && typeof m?.setOutputVolume === "function")
-    ));
+    return this.cached("mediaEngine", () => {
+      // Strong filter first: the real store exposes the full audio surface,
+      // which rules out component props and other partial lookalikes.
+      const strong = (m) => m && typeof m === "object" && !m.$$typeof
+        && typeof m.getOutputVolume === "function"
+        && typeof m.setOutputVolume === "function"
+        && (typeof m.getMediaEngine === "function"
+          || typeof m.getInputVolume === "function"
+          || typeof m.isSelfMute === "function");
+      return this.findModule(strong, { searchExports: false })
+        || this.findModule(strong, { searchExports: true })
+        || this.findByProps("getOutputVolume", "setOutputVolume")
+        || this.findModule((m) => typeof m?.getOutputVolume === "function" && typeof m?.setOutputVolume === "function");
+    });
   }
 
   getVoiceActions() {
@@ -159,36 +168,55 @@ class DiscordBridge {
     }
   }
 
+  // Writes go through Flux (what Discord's own UI uses) plus a direct store
+  // call, then read back the value so toasts report ground truth instead of
+  // assuming the write landed.
   setOutputVolume(value) {
     const v = DiscordBridge.clampVolume(value);
     if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
-    const store = this.getMediaEngineStore();
+    const before = this.getOutputVolume();
+    const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
     let direct = false;
     try {
+      const store = this.getMediaEngineStore();
       if (store && typeof store.setOutputVolume === "function") {
         store.setOutputVolume(v);
         direct = true;
       }
-    } catch { /* Flux fallback below */ }
-    const res = this.dispatch("AUDIO_SET_OUTPUT_VOLUME", { volume: v });
-    if (direct || res.ok) return { ok: true, message: `Output volume ${v}%` };
-    return { ok: false, message: "Output volume module unavailable (Discord update?)." };
+    } catch { /* Flux path above is primary */ }
+    if (!res.ok && !direct) {
+      return { ok: false, message: "Output volume module unavailable (Discord update?)." };
+    }
+    return this.verifyVolume("Output", before, v);
   }
 
   setInputVolume(value) {
     const v = DiscordBridge.clampVolume(value);
     if (v === null) return { ok: false, message: `Invalid volume: ${value}` };
-    const store = this.getMediaEngineStore();
+    const before = this.getInputVolume();
+    const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
     let direct = false;
     try {
+      const store = this.getMediaEngineStore();
       if (store && typeof store.setInputVolume === "function") {
         store.setInputVolume(v);
         direct = true;
       }
-    } catch { /* Flux fallback below */ }
-    const res = this.dispatch("AUDIO_SET_INPUT_VOLUME", { volume: v });
-    if (direct || res.ok) return { ok: true, message: `Input volume ${v}%` };
-    return { ok: false, message: "Input volume module unavailable (Discord update?)." };
+    } catch { /* Flux path above is primary */ }
+    if (!res.ok && !direct) {
+      return { ok: false, message: "Input volume module unavailable (Discord update?)." };
+    }
+    return this.verifyVolume("Input", before, v);
+  }
+
+  verifyVolume(label, before, wanted) {
+    const after = label === "Input" ? this.getInputVolume() : this.getOutputVolume();
+    if (after === null) return { ok: true, message: `${label} volume -> ${wanted}% (unverified)` };
+    if (Math.abs(after - wanted) > 1) {
+      return { ok: false, message: `${label} volume stuck at ${Math.round(after)}% (wanted ${wanted}%)` };
+    }
+    const from = before === null ? "?" : `${Math.round(before)}%`;
+    return { ok: true, message: `${label} volume ${from} -> ${wanted}%` };
   }
 
   readFlag(candidates) {
@@ -397,7 +425,7 @@ class DiscordBridge {
       }
     } catch { /* console fallback below */ }
     try {
-      console.log(`[KeybindMacros] ${text}`);
+      console.log(`[BetterKeybinds] ${text}`);
     } catch { /* ignore */ }
   }
 }
