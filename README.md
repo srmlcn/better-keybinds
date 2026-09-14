@@ -45,8 +45,9 @@ Every volume write is verified by reading the value back from Discord's own audi
 
 - `Speaker volume 50% → 100%` — applied and confirmed.
 - `Speaker volume didn't change — still 50%` — Discord rejected or ignored the write; the bind genuinely did not work.
-- `Couldn't find Discord's speaker controls — ...` — the volume API shape differs from expectations; run Diagnostics → Deep scan and share the output.
 - `... (couldn't confirm)` — write sent but the value couldn't be read back.
+
+When Discord's volume store isn't readable, the plugin tracks the last value it set, so toggle and adjust binds keep working across presses. Tracking resets on reload (the first toggle press then sets level B). If you change volume in Discord's own settings, the next toggle press resyncs within one hop.
 
 Discord's Settings → Voice & Video slider does not always repaint while open; close and reopen Settings to see the new position. The toast value is authoritative, not the slider.
 
