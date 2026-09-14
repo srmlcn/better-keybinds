@@ -79,6 +79,8 @@ Yes — three layers, easiest first:
 
 If volume "doesn't change", check in order: toast message (success/stuck/unavailable?) → Diagnostics dots (MediaEngine found? methods count?) → debug log (which write path was used?) → console for red errors.
 
+Discord loads its audio modules lazily: if MediaEngine shows MISSING, open Discord Settings → Voice & Video (or join a voice channel), then hit **Refresh status** — the dots should turn green and binds start working. Test volume binds while in voice or watching a stream; otherwise there is no audible output to change.
+
 ## Troubleshooting
 
 - **"Didn't change" toast**: Discord ignored the write. Try reopening Discord; if it persists after a Discord update, the audio internals likely moved and the bridge needs an update.
