@@ -15,6 +15,8 @@ class DiscordBridge {
     this.utilsTried = false;
     this.utilsCache = null;
     this.keymapCache = new Map();
+    this.lastSetOutputVolume = null;
+    this.lastSetInputVolume = null;
   }
 
   debug(message) {
@@ -307,9 +309,16 @@ class DiscordBridge {
       this.warn("output volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's speaker controls — Discord may have updated." };
     }
-    if (!this.getMediaEngineStore()) return this.controlsMissing("Speaker", "output");
+    const via = [viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+");
+    if (this.getOutputVolume() === null) {
+      this.lastSetOutputVolume = v;
+      const out = { ok: true, message: `Speaker volume → ${v}%` };
+      this.info(`output volume ${before ?? "?"} -> ${v} via ${via} (unreadable, tracking): ${out.message}`);
+      return out;
+    }
     const out = this.verifyVolume("Output", before, v);
-    this.info(`output volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    if (out.ok) this.lastSetOutputVolume = v;
+    this.info(`output volume ${before ?? "?"} -> ${v} via ${via}: ${out.message}`);
     return out;
   }
 
@@ -340,19 +349,39 @@ class DiscordBridge {
       this.warn("input volume: no write path available");
       return { ok: false, message: "Couldn't reach Discord's microphone controls — Discord may have updated." };
     }
-    if (!this.getMediaEngineStore()) return this.controlsMissing("Microphone", "input");
+    const via = [viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+");
+    if (this.getInputVolume() === null) {
+      this.lastSetInputVolume = v;
+      const out = { ok: true, message: `Microphone volume → ${v}%` };
+      this.info(`input volume ${before ?? "?"} -> ${v} via ${via} (unreadable, tracking): ${out.message}`);
+      return out;
+    }
     const out = this.verifyVolume("Input", before, v);
-    this.info(`input volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
+    if (out.ok) this.lastSetInputVolume = v;
+    this.info(`input volume ${before ?? "?"} -> ${v} via ${via}: ${out.message}`);
     return out;
   }
 
-  // No readable store: the volume API shape differs from expectations
-  // (renamed methods or an unloaded chunk). Fail plainly; Diagnostics'
-  // deep scan identifies the real shape.
-  controlsMissing(label, which) {
-    const message = `Couldn't find Discord's ${label.toLowerCase()} controls — Discord may have updated.`;
-    this.warn(`${which} volume: controls not found`);
-    return { ok: false, message };
+  // Live reading with last-set fallback for toggle/adjust when Discord's
+  // volume store isn't readable. Verification always uses raw reads.
+  resolveOutputVolume() {
+    const live = this.getOutputVolume();
+    if (live !== null) return { tracked: false, value: live };
+    if (this.lastSetOutputVolume !== null) {
+      this.debug(`output volume unreadable; using tracked ${this.lastSetOutputVolume}`);
+      return { tracked: true, value: this.lastSetOutputVolume };
+    }
+    return { tracked: false, value: null };
+  }
+
+  resolveInputVolume() {
+    const live = this.getInputVolume();
+    if (live !== null) return { tracked: false, value: live };
+    if (this.lastSetInputVolume !== null) {
+      this.debug(`input volume unreadable; using tracked ${this.lastSetInputVolume}`);
+      return { tracked: true, value: this.lastSetInputVolume };
+    }
+    return { tracked: false, value: null };
   }
 
   verifyVolume(label, before, wanted) {
@@ -739,6 +768,7 @@ class DiscordBridge {
       channelRouter: Boolean(this.getChannelRouter()),
       discordUtils: this.hasGlobalSupport(),
       flux: Boolean(this.getFlux()),
+      inputTracked: this.lastSetInputVolume,
       inputVolume: this.getInputVolume(),
       keycodeMap: Boolean(this.getKeycodeMap()),
       mediaEngine: Boolean(media),
@@ -747,6 +777,7 @@ class DiscordBridge {
           .filter((k) => typeof media[k] === "function")
         : [],
       messageActions: Boolean(this.getMessageActions()),
+      outputTracked: this.lastSetOutputVolume,
       outputVolume: this.getOutputVolume(),
       platform: this.getPlatform(),
       selectedChannel: Boolean(this.getSelectedChannelStore()),
@@ -808,7 +839,9 @@ class DiscordBridge {
       `fluxSubSample: ${(p.audioPath?.fluxSubSample || []).join(", ") || "none"}`,
       `setterSource(setOutputVolume): ${p.audioPath?.sources?.setOutputVolume || "n/a"}`,
       `outputVolume: ${val(p.outputVolume)}`,
+      `outputTracked: ${p.outputTracked ?? "none"}`,
       `inputVolume: ${val(p.inputVolume)}`,
+      `inputTracked: ${p.inputTracked ?? "none"}`,
       `selfMute: ${val(p.selfMute)}`,
       `selfDeaf: ${val(p.selfDeaf)}`
     ].filter(Boolean).join("\n");

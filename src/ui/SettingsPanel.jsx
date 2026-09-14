@@ -590,8 +590,8 @@ function SettingsPanel(props) {
           <span><span style={s.statusDot(status.discordUtils)} />Native</span>
           <span><span style={s.statusDot(status.keycodeMap)} />Keymap</span>
           <span style={s.small}>platform: {status.platform}</span>
-          <span style={s.small}>out: {status.outputVolume ?? "?"}</span>
-          <span style={s.small}>in: {status.inputVolume ?? "?"}</span>
+          <span style={s.small}>out: {status.outputVolume ?? (status.outputTracked ?? "?")}{status.outputVolume == null && status.outputTracked != null ? "~" : ""}</span>
+          <span style={s.small}>in: {status.inputVolume ?? (status.inputTracked ?? "?")}{status.inputVolume == null && status.inputTracked != null ? "~" : ""}</span>
           <span style={s.small}>mute: {String(status.selfMute ?? "?")}</span>
           <span style={s.small}>deaf: {String(status.selfDeaf ?? "?")}</span>
         </div>

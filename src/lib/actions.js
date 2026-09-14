@@ -230,12 +230,12 @@ async function runAction(type, params, ctx) {
       case "output.set":
         return discord.setOutputVolume(values.volume);
       case "output.adjust": {
-        const current = discord.getOutputVolume();
-        if (current === null) return { message: "Couldn't read the current speaker volume.", ok: false };
+        const { value: current } = discord.resolveOutputVolume();
+        if (current === null) return { message: "Couldn't read the speaker volume yet — run any Set bind first.", ok: false };
         return discord.setOutputVolume(current + values.delta);
       }
       case "output.toggle": {
-        const current = discord.getOutputVolume();
+        const { value: current } = discord.resolveOutputVolume();
         const target = resolveToggle(current, values.a, values.b);
         if (target === null) return { message: "This keybind's volume levels are invalid.", ok: false };
         return discord.setOutputVolume(target);
@@ -243,8 +243,8 @@ async function runAction(type, params, ctx) {
       case "input.set":
         return discord.setInputVolume(values.volume);
       case "input.adjust": {
-        const current = discord.getInputVolume();
-        if (current === null) return { message: "Couldn't read the current microphone volume.", ok: false };
+        const { value: current } = discord.resolveInputVolume();
+        if (current === null) return { message: "Couldn't read the microphone volume yet — run any Set bind first.", ok: false };
         return discord.setInputVolume(current + values.delta);
       }
       case "self.toggleMute":
