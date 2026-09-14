@@ -141,7 +141,7 @@ function SettingsPanel(props) {
       window.removeEventListener("keydown", onDown, true);
       window.removeEventListener("keyup", onUp, true);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // recordingId is the only hook input; key handlers close over refs.
   }, [recordingId]);
 
   function updateBind(id, patch) {

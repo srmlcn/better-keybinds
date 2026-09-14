@@ -3,6 +3,7 @@
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
  * @version 2.6.6
+ * @source https://github.com/srmlcn/bd-better-keybinds
  * @runAt idle
  */
 "use strict";

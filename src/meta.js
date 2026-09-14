@@ -7,7 +7,7 @@ module.exports = {
   description: "Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.",
   invite: "",
   name: "BetterKeybinds",
-  source: "",
+  source: "https://github.com/srmlcn/bd-better-keybinds",
   updateUrl: "",
   website: ""
 };

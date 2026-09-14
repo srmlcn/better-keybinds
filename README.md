@@ -79,10 +79,28 @@ Under the **Import / export / reset** dropdown in settings: **Export** dumps JSO
 
 ```bash
 npm install
+npm run lint      # ESLint
 npm test          # node:test unit suite
 npm run build     # -> dist/BetterKeybinds.plugin.js
 npm run watch     # rebuild on change
 ```
+
+## CI and release
+
+GitHub Actions (`.github/workflows/ci.yml`) on pull requests and `main`:
+
+| Job | When | What |
+|---|---|---|
+| **lint** | PR + `main` | ESLint. Pull requests also run commitlint on the PR commit range |
+| **test** | PR + `main` | `npm test` |
+| **build** | after lint + test | `npm run build`, uploads `BetterKeybinds-plugin` |
+| **release** | `main` only | [semantic-release](https://semantic-release.gitbook.io): bump, changelog, rebuild plugin, git tag, GitHub Release |
+
+Version bumps follow Conventional Commits: `feat` → minor, `fix` / `perf` → patch, `BREAKING CHANGE` footer → major. `ci`, `chore`, `docs`, `test`, `refactor`, and `build` do not bump.
+
+The GitHub Release attaches `dist/BetterKeybinds.plugin.js`. Release commits use `[skip ci]` so they do not loop.
+
+Baseline tag is `v2.6.6`. GitHub Actions needs that tag on `main` before the first automated release.
 
 Layout: `src/index.js` (plugin entry) · `src/lib/discord.js` (webpack bridge) · `src/lib/keybinds.js` · `src/lib/registrations.js` (in-app + global engine) · `src/lib/store.js` (persistence, import/export) · `src/lib/actions.js` (registry + executors) · `src/ui/SettingsPanel.jsx` (editor, native controls + `BdApi.React` only).
 
