@@ -54,6 +54,7 @@ function SettingsPanel(props) {
   const collectedRef = React.useRef([]);
   const bindsRef = React.useRef(binds);
   const logPreRef = React.useRef(null);
+  const ioDetailsRef = React.useRef(null);
   bindsRef.current = binds;
 
   function safeProbe() {
@@ -183,16 +184,6 @@ function SettingsPanel(props) {
     say("info", `Exported ${binds.length} bind(s). Copy the text below to back up or share.`);
   }
 
-  function doCopy() {
-    const done = () => say("info", "Copied to clipboard.");
-    try {
-      if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(ioText).then(done, done);
-      else say("warning", "Clipboard unavailable; select the text manually.");
-    } catch {
-      say("warning", "Clipboard unavailable; select the text manually.");
-    }
-  }
-
   function doImport(replace) {
     try {
       const { binds: imported, warnings } = importState(ioText, KNOWN_TYPES);
@@ -219,16 +210,18 @@ function SettingsPanel(props) {
       say("error", error?.message || String(error));
       return;
     }
-    const done = (ok) => say(ok ? "info" : "warning", ok ? "Diagnostics copied." : "Copy failed; select manually.");
-    try {
-      if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-      else {
-        setIoText(text);
-        done(false);
-      }
-    } catch {
+    const fallback = () => {
       setIoText(text);
-      done(false);
+      try {
+        if (ioDetailsRef.current) ioDetailsRef.current.open = true;
+      } catch { /* ignore */ }
+      say("warning", "Clipboard unavailable — diagnostics placed in the import/export box below.");
+    };
+    try {
+      if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => say("info", "Diagnostics copied."), fallback);
+      else fallback();
+    } catch {
+      fallback();
     }
   }
 
@@ -306,6 +299,13 @@ function SettingsPanel(props) {
       marginTop: 8,
       padding: "6px 10px"
     },
+    details: {
+      background: "var(--background-secondary, #2b2d31)",
+      border: "1px solid var(--background-modifier-accent, #3f4248)",
+      borderRadius: 8,
+      marginTop: 12,
+      padding: "8px 10px"
+    },
     input: {
       background: "var(--background-tertiary, #1e1f22)",
       border: "1px solid var(--background-modifier-accent, #3f4248)",
@@ -375,6 +375,7 @@ function SettingsPanel(props) {
       width: 8
     }),
     statusGrid: { display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 6 },
+    summary: { cursor: "pointer", fontSize: 13, fontWeight: 700 },
     title: { fontSize: 16, fontWeight: 700, margin: 0 },
     toolbar: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
   };
@@ -527,11 +528,6 @@ function SettingsPanel(props) {
 
       <div style={s.toolbar}>
         <button onClick={addBind} style={s.btnPrimary}>+ Add keybind</button>
-        <button onClick={doExport} style={s.btn}>Export</button>
-        <button onClick={doCopy} style={s.btn}>Copy box</button>
-        <button onClick={() => doImport(false)} style={s.btn}>Import (append)</button>
-        <button onClick={() => doImport(true)} style={s.btn}>Import (replace)</button>
-        <button onClick={doClear} style={s.btnDanger}>Delete all</button>
       </div>
 
       {binds.length === 0 ? (
@@ -541,17 +537,23 @@ function SettingsPanel(props) {
       ) : null}
       {binds.map(renderBind)}
 
-      <div style={{ marginTop: 12 }}>
-        <div style={s.label}>Import / export box</div>
+      <details ref={ioDetailsRef} style={s.details}>
+        <summary style={s.summary}>Import / export / reset</summary>
+        <div style={s.toolbar}>
+          <button onClick={doExport} style={s.btn}>Export</button>
+          <button onClick={() => doImport(false)} style={s.btn}>Import (append)</button>
+          <button onClick={() => doImport(true)} style={s.btn}>Import (replace)</button>
+          <button onClick={doClear} style={s.btnDanger}>Delete all</button>
+        </div>
         <textarea
           onChange={(e) => setIoText(e.target.value)}
           placeholder="Export output or paste binds JSON here, then Import."
           rows={4}
-          style={{ ...s.input, marginTop: 4, width: "100%" }}
+          style={{ ...s.input, marginTop: 6, width: "100%" }}
           value={ioText}
         />
-        <div style={s.small}>Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.</div>
-      </div>
+      </details>
+      <div style={s.small}>Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K.</div>
 
       <h3 style={s.sectionTitle}>Diagnostics</h3>
       <div style={s.toolbar}>
