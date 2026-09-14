@@ -183,7 +183,7 @@ describe("DiscordBridge with stubbed modules", () => {
   });
 });
 
-describe("unloaded voice chunk", () => {
+describe("missing controls", () => {
   function fluxOnlyBdApi() {
     const flux = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
     return {
@@ -201,14 +201,14 @@ describe("unloaded voice chunk", () => {
       }
     };
   }
-  it("guides instead of claiming success", () => {
+  it("fails plainly without a readable store", () => {
     const d = new DiscordBridge(fluxOnlyBdApi());
     const out = d.setOutputVolume(60);
     assert.equal(out.ok, false);
-    assert.match(out.message, /aren't loaded yet/);
+    assert.match(out.message, /Couldn't find Discord's speaker controls/);
     const inp = d.setInputVolume(60);
     assert.equal(inp.ok, false);
-    assert.match(inp.message, /Voice & Video settings/);
+    assert.match(inp.message, /microphone controls/);
   });
 });
 
@@ -292,7 +292,67 @@ describe("inspectAudioPath", () => {
     const flux = { dispatch: () => {}, subscribe: () => {}, unsubscribe: () => {} };
     const ap = bridgeWith(flux, null).inspectAudioPath();
     assert.equal(ap.hasOutputVolumeHandler, null);
+    assert.equal(ap.hasOutputVolumeSubscriber, null);
     assert.equal(ap.setters.setOutputVolume, false);
     assert.deepEqual(ap.sources, {});
+  });
+  it("detects volume subscribers", () => {
+    const flux = {
+      _actionHandlers: {},
+      _subscriptions: { AUDIO_SET_OUTPUT_VOLUME: new Set([() => {}, () => {}]), CHAT_X: new Set() },
+      dispatch: () => {},
+      subscribe: () => {},
+      unsubscribe: () => {}
+    };
+    const ap = bridgeWith(flux, voice).inspectAudioPath();
+    assert.equal(ap.hasOutputVolumeSubscriber, true);
+    assert.equal(ap.fluxSubCount, 2);
+    assert.deepEqual(ap.fluxSubAudioTypes, ["AUDIO_SET_OUTPUT_VOLUME"]);
+  });
+  it("treats non-action-keyed registries as unknown", () => {
+    const flux = {
+      _actionHandlers: { _alpha: 1, _beta: 2 },
+      _subscriptions: { 0: 1 },
+      dispatch: () => {},
+      subscribe: () => {},
+      unsubscribe: () => {}
+    };
+    const ap = bridgeWith(flux, voice).inspectAudioPath();
+    assert.equal(ap.hasOutputVolumeHandler, null);
+    assert.equal(ap.hasOutputVolumeSubscriber, null);
+    assert.deepEqual(ap.fluxHandlerSample, ["_alpha", "_beta"]);
+  });
+});
+
+describe("scanAudioCandidates", () => {
+  function scanBdApi(modules) {
+    return {
+      Webpack: {
+        getModules: () => modules
+      }
+    };
+  }
+  it("finds engine, settings, and key matches once each", () => {
+    const engine = { getMediaEngine() {}, other: 1 };
+    const settings = { inputVolume: 90, outputVolume: 80 };
+    const keyed = { myVolumeSlider: 1 };
+    const d = new DiscordBridge(scanBdApi([engine, settings, keyed, engine, { unrelated: 1 }]));
+    const hits = d.scanAudioCandidates();
+    assert.equal(hits.length, 3);
+    assert.deepEqual(hits.map((h) => h.kind), ["engine-api", "volume-settings", "volume-key"]);
+    assert.match(hits[0].fingerprint, /getMediaEngine/);
+  });
+  it("respects the limit", () => {
+    const d = new DiscordBridge(scanBdApi([{ aVolume: 1 }, { bVolume: 2 }, { cVolume: 3 }]));
+    assert.equal(d.scanAudioCandidates({ limit: 2 }).length, 2);
+  });
+  it("returns empty when enumeration is unsupported", () => {
+    const logged = [];
+    const d = new DiscordBridge(
+      { Webpack: {} },
+      { debug: () => {}, info: () => {}, warn: (t, m) => logged.push(m) }
+    );
+    assert.deepEqual(d.scanAudioCandidates(), []);
+    assert.ok(logged.some((m) => m.includes("enumeration unsupported")));
   });
 });
