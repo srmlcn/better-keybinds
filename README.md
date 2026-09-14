@@ -45,7 +45,7 @@ Every volume write is verified by reading the value back from Discord's own audi
 
 - `Speaker volume 50% → 100%` — applied and confirmed.
 - `Speaker volume didn't change — still 50%` — Discord rejected or ignored the write; the bind genuinely did not work.
-- `Discord's voice controls aren't loaded yet — ...` — join a voice channel or open Voice & Video settings, then retry. No write is possible until Discord loads its voice code.
+- `Couldn't find Discord's speaker controls — ...` — the volume API shape differs from expectations; run Diagnostics → Deep scan and share the output.
 - `... (couldn't confirm)` — write sent but the value couldn't be read back.
 
 Discord's Settings → Voice & Video slider does not always repaint while open; close and reopen Settings to see the new position. The toast value is authoritative, not the slider.
@@ -80,7 +80,7 @@ Yes — three layers, easiest first:
 
 If volume "doesn't change", check in order: toast message (success/stuck/unavailable?) → Diagnostics dots (MediaEngine found? methods count?) → debug log (which write path was used?) → console for red errors.
 
-Discord loads its audio modules lazily: if MediaEngine shows MISSING, open Discord Settings → Voice & Video (or join a voice channel), then hit **Refresh status** — the dots should turn green and binds start working. Test volume binds while in voice or watching a stream; otherwise there is no audible output to change.
+If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps every loaded module for audio-related APIs and logs each candidate's shape, which identifies the real method names. Then **Copy diagnostics** and share the result.
 
 ## Troubleshooting
 
