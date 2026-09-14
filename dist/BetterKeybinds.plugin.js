@@ -2,7 +2,7 @@
  * @name BetterKeybinds
  * @author Cognitive AI
  * @description Discord-style keybinds for speaker volume, mute/deafen, navigation, messages and utilities.
- * @version 2.4.1
+ * @version 2.5.0
  * @runAt idle
  */
 "use strict";
@@ -572,7 +572,7 @@ var require_discord = __commonJS({
           this.warn("output volume: no write path available");
           return { ok: false, message: "Couldn't reach Discord's speaker controls \u2014 Discord may have updated." };
         }
-        if (!this.getMediaEngineStore()) return this.unloadedVoice("output");
+        if (!this.getMediaEngineStore()) return this.controlsMissing("Speaker", "output");
         const out = this.verifyVolume("Output", before, v);
         this.info(`output volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
         return out;
@@ -605,17 +605,17 @@ var require_discord = __commonJS({
           this.warn("input volume: no write path available");
           return { ok: false, message: "Couldn't reach Discord's microphone controls \u2014 Discord may have updated." };
         }
-        if (!this.getMediaEngineStore()) return this.unloadedVoice("input");
+        if (!this.getMediaEngineStore()) return this.controlsMissing("Microphone", "input");
         const out = this.verifyVolume("Input", before, v);
         this.info(`input volume ${before ?? "?"} -> ${v} via ${[viaActions && "actions", res.ok && "flux", direct && "direct"].filter(Boolean).join("+")}: ${out.message}`);
         return out;
       }
-      // Discord loads voice code on demand. Without the store there is no
-      // handler for volume events and nothing to verify against, so a write
-      // now is almost certainly a no-op: say so instead of "couldn't confirm".
-      unloadedVoice(which) {
-        const message = "Discord's voice controls aren't loaded yet \u2014 join a voice channel or open Voice & Video settings, then try again.";
-        this.warn(`${which} volume: voice chunk unloaded`);
+      // No readable store: the volume API shape differs from expectations
+      // (renamed methods or an unloaded chunk). Fail plainly; Diagnostics'
+      // deep scan identifies the real shape.
+      controlsMissing(label, which) {
+        const message = `Couldn't find Discord's ${label.toLowerCase()} controls \u2014 Discord may have updated.`;
+        this.warn(`${which} volume: controls not found`);
         return { ok: false, message };
       }
       verifyVolume(label, before, wanted) {
@@ -830,15 +830,90 @@ var require_discord = __commonJS({
         this.debug(`keycode map (${platform}): ${found ? "found" : "missing"}`);
         return found;
       }
+      getAllModules(filter, { searchExports = true } = {}) {
+        const BdApi = this.BdApi;
+        try {
+          if (typeof BdApi?.Webpack?.getModules === "function") {
+            return BdApi.Webpack.getModules(filter, { searchExports }) || [];
+          }
+        } catch (error) {
+          this.warn(`getModules threw: ${error?.message || error}`);
+        }
+        return null;
+      }
+      // Broad sweep for audio-related modules under whatever API shape Discord
+      // currently uses. Runs on demand from Diagnostics; results go to the log.
+      scanAudioCandidates({ limit = 15 } = {}) {
+        const started = Date.now();
+        const seen = /* @__PURE__ */ new Set();
+        const hits = [];
+        const match = (m) => {
+          if (!m || typeof m !== "object" && typeof m !== "function") return null;
+          let keys = [];
+          try {
+            keys = Object.keys(m);
+          } catch {
+            return null;
+          }
+          const hasVolumeKey = keys.some((k) => /volume/i.test(k));
+          let hasEngineKey = false;
+          try {
+            hasEngineKey = [
+              "getMediaEngine",
+              "getOutputDevice",
+              "getOutputDeviceId",
+              "isSelfMute",
+              "isSelfDeaf",
+              "getOutputVolume",
+              "setOutputVolume",
+              "getInputVolume",
+              "setInputVolume"
+            ].some((k) => k in m);
+          } catch {
+          }
+          let hasVolumeSetting = false;
+          try {
+            hasVolumeSetting = typeof m.outputVolume === "number" || typeof m.inputVolume === "number";
+          } catch {
+          }
+          if (!hasVolumeKey && !hasEngineKey && !hasVolumeSetting) return null;
+          const fingerprint = this.fingerprint(m, 30);
+          if (seen.has(fingerprint)) return null;
+          seen.add(fingerprint);
+          return { fingerprint, kind: hasEngineKey ? "engine-api" : hasVolumeSetting ? "volume-settings" : "volume-key" };
+        };
+        for (const searchExports of [false, true]) {
+          const mods = this.getAllModules(() => true, { searchExports });
+          if (!mods) {
+            this.warn("audio scan: module enumeration unsupported");
+            return [];
+          }
+          for (const m of mods) {
+            if (hits.length >= limit) break;
+            const hit = match(m);
+            if (hit) hits.push(hit);
+          }
+          if (hits.length >= limit) break;
+        }
+        this.info(`audio scan: ${hits.length} candidate(s) in ${Date.now() - started}ms`);
+        hits.forEach((h, i) => this.info(`audio scan #${i + 1} [${h.kind}]: ${h.fingerprint}`));
+        return hits;
+      }
       // Read-only inspection of the volume write path: which setters exist,
-      // whether Flux has a handler for the volume event, and what the setter
+      // whether Flux routes the volume event, and what the setter
       // functions look like. Decisive for "dispatch goes nowhere" diagnosis.
       inspectAudioPath() {
         const out = {
           fluxAudioTypes: [],
           fluxHandlerCount: null,
+          fluxHandlerSample: [],
+          fluxSubAudioTypes: [],
+          fluxSubCount: null,
+          fluxSubSample: [],
+          fluxSubTotalTypes: null,
           fluxTotalTypes: null,
           hasOutputVolumeHandler: null,
+          hasOutputVolumeSubscriber: null,
           setters: { setInputVolume: false, setOutputVolume: false },
           sources: {}
         };
@@ -855,28 +930,58 @@ var require_discord = __commonJS({
           }
         } catch {
         }
+        const actionLike = (t) => /^[A-Z][A-Z0-9_]{3,}$/.test(String(t));
+        const readRegistry = (registry) => {
+          const types = [];
+          if (registry instanceof Map) {
+            for (const key of registry.keys()) types.push(key);
+          } else if (registry && typeof registry === "object") {
+            types.push(...Object.keys(registry));
+          }
+          return types;
+        };
+        const countEntry = (registry, type) => {
+          try {
+            const entry = registry instanceof Map ? registry.get(type) : registry[type];
+            if (typeof entry?.size === "number") return entry.size;
+            if (Array.isArray(entry)) return entry.length;
+            return 1;
+          } catch {
+            return null;
+          }
+        };
         try {
           const flux = this.getFlux();
-          const handlers = flux?._actionHandlers;
-          const types = [];
-          if (handlers instanceof Map) {
-            for (const key of handlers.keys()) types.push(key);
-          } else if (handlers && typeof handlers === "object") {
-            types.push(...Object.keys(handlers));
-          }
-          if (types.length || handlers) {
-            out.fluxTotalTypes = types.length;
-            out.fluxAudioTypes = types.filter((t) => /AUDIO|VOLUME|VOICE|MEDIA|SPEAK|MUTE|DEAF/i.test(String(t))).map(String).sort().slice(0, 30);
-            if (types.includes("AUDIO_SET_OUTPUT_VOLUME")) {
-              out.hasOutputVolumeHandler = true;
-              try {
-                const entry = handlers instanceof Map ? handlers.get("AUDIO_SET_OUTPUT_VOLUME") : handlers["AUDIO_SET_OUTPUT_VOLUME"];
-                out.fluxHandlerCount = typeof entry?.size === "number" ? entry.size : Array.isArray(entry) ? entry.length : 1;
-              } catch {
-                out.fluxHandlerCount = null;
+          const handlerTypes = readRegistry(flux?._actionHandlers);
+          if (handlerTypes.length) {
+            out.fluxTotalTypes = handlerTypes.length;
+            out.fluxHandlerSample = handlerTypes.map(String).sort().slice(0, 8);
+            if (handlerTypes.some(actionLike)) {
+              out.fluxAudioTypes = handlerTypes.map(String).sort().filter((t) => /AUDIO|VOLUME|VOICE|MEDIA|SPEAK|MUTE|DEAF/i.test(t)).slice(0, 30);
+              if (handlerTypes.includes("AUDIO_SET_OUTPUT_VOLUME")) {
+                out.hasOutputVolumeHandler = true;
+                out.fluxHandlerCount = countEntry(flux._actionHandlers, "AUDIO_SET_OUTPUT_VOLUME");
+              } else {
+                out.hasOutputVolumeHandler = false;
               }
-            } else if (types.length) {
-              out.hasOutputVolumeHandler = false;
+            } else {
+              this.debug(`flux _actionHandlers not action-keyed: ${out.fluxHandlerSample.join(",")}`);
+            }
+          }
+          const subTypes = readRegistry(flux?._subscriptions);
+          if (subTypes.length) {
+            out.fluxSubTotalTypes = subTypes.length;
+            out.fluxSubSample = subTypes.map(String).sort().slice(0, 8);
+            if (subTypes.some(actionLike)) {
+              out.fluxSubAudioTypes = subTypes.map(String).sort().filter((t) => /AUDIO|VOLUME|VOICE|MEDIA|SPEAK|MUTE|DEAF/i.test(t)).slice(0, 30);
+              if (subTypes.includes("AUDIO_SET_OUTPUT_VOLUME")) {
+                out.hasOutputVolumeSubscriber = true;
+                out.fluxSubCount = countEntry(flux._subscriptions, "AUDIO_SET_OUTPUT_VOLUME");
+              } else {
+                out.hasOutputVolumeSubscriber = false;
+              }
+            } else {
+              this.debug(`flux _subscriptions not action-keyed: ${out.fluxSubSample.join(",")}`);
             }
           }
         } catch {
@@ -922,7 +1027,8 @@ var require_discord = __commonJS({
         const ap = p.audioPath || {};
         const vset = ap.setters?.setOutputVolume ? "ok" : "MISS";
         const oh = ap.hasOutputVolumeHandler === true ? `yes${typeof ap.fluxHandlerCount === "number" ? `(${ap.fluxHandlerCount})` : ""}` : ap.hasOutputVolumeHandler === false ? "NO" : "?";
-        return `${mods} vset:${vset} ovolh:${oh} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
+        const osub = ap.hasOutputVolumeSubscriber === true ? `yes${typeof ap.fluxSubCount === "number" ? `(${ap.fluxSubCount})` : ""}` : ap.hasOutputVolumeSubscriber === false ? "NO" : "?";
+        return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"}`;
       }
       diagnosticsText(header = "") {
         const p = this.probe();
@@ -947,6 +1053,10 @@ var require_discord = __commonJS({
           `voiceSetter(input): ${yn(p.audioPath?.setters?.setInputVolume)}`,
           `outputVolumeHandler: ${p.audioPath?.hasOutputVolumeHandler === true ? `yes (${p.audioPath.fluxHandlerCount ?? "?"} handlers)` : p.audioPath?.hasOutputVolumeHandler === false ? "NO" : "unknown"}`,
           `fluxAudioTypes(${p.audioPath?.fluxTotalTypes ?? "?"} total): ${(p.audioPath?.fluxAudioTypes || []).join(", ") || "none"}`,
+          `fluxHandlerSample: ${(p.audioPath?.fluxHandlerSample || []).join(", ") || "none"}`,
+          `outputVolumeSubscriber: ${p.audioPath?.hasOutputVolumeSubscriber === true ? `yes (${p.audioPath.fluxSubCount ?? "?"} subs)` : p.audioPath?.hasOutputVolumeSubscriber === false ? "NO" : "unknown"}`,
+          `fluxSubAudioTypes(${p.audioPath?.fluxSubTotalTypes ?? "?"} total): ${(p.audioPath?.fluxSubAudioTypes || []).join(", ") || "none"}`,
+          `fluxSubSample: ${(p.audioPath?.fluxSubSample || []).join(", ") || "none"}`,
           `setterSource(setOutputVolume): ${p.audioPath?.sources?.setOutputVolume || "n/a"}`,
           `outputVolume: ${val(p.outputVolume)}`,
           `inputVolume: ${val(p.inputVolume)}`,
@@ -1889,6 +1999,16 @@ ${log?.toText(150) || "(no log)"}`;
         } catch {
         }
       }
+      function deepScan() {
+        let hits = [];
+        try {
+          hits = discord?.scanAudioCandidates?.() || [];
+        } catch (error) {
+          say("error", error?.message || String(error));
+          return;
+        }
+        say("info", hits.length ? `Deep scan found ${hits.length} audio candidate(s) \u2014 see the log.` : "Deep scan found no audio modules.");
+      }
       React.useEffect(() => {
         if (!log?.subscribe) return void 0;
         const unsub = log.subscribe(() => setLogTick((t) => t + 1));
@@ -2120,13 +2240,13 @@ ${log?.toText(150) || "(no log)"}`;
           style: { ...s.input, marginTop: 6, width: "100%" },
           value: ioText
         }
-      )), /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 6 } }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K."), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
+      )), /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 6 } }, "Click a keybind button, press a chord, release to save (Esc cancels). Single-character binds are ignored while typing. Exact chords only: Ctrl+K never fires during Ctrl+Shift+K."), binds.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { ...s.small, marginTop: 12 } }, "No keybinds yet. Add one, pick an action from the dropdown, then click its keybind button and press your chord.") : null, binds.map(renderBind), /* @__PURE__ */ React.createElement("h3", { style: s.sectionTitle }, "Diagnostics"), /* @__PURE__ */ React.createElement("div", { style: s.toolbar }, /* @__PURE__ */ React.createElement("button", { onClick: () => setStatus(safeProbe()), style: s.btn }, "Refresh status"), /* @__PURE__ */ React.createElement("button", { onClick: deepScan, style: s.btn }, "Deep scan"), /* @__PURE__ */ React.createElement("button", { onClick: copyDiagnostics, style: s.btnPrimary }, "Copy diagnostics"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
         try {
           log?.clear();
         } catch {
         }
         setLogTick((t) => t + 1);
-      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.audioActions) }), "AudioActions"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(Boolean(status.audioPath?.setters?.setOutputVolume)) }), "VSet"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), status && !status.mediaEngine ? /* @__PURE__ */ React.createElement("div", { style: s.small }, "Voice controls aren't loaded \u2014 join a voice channel or open Voice & Video settings, then Refresh status.") : null, /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
+      }, style: s.btn }, "Clear log"), /* @__PURE__ */ React.createElement("label", { style: s.checkRow }, /* @__PURE__ */ React.createElement("input", { checked: debugOn, onChange: (e) => toggleDebug(e.target.checked), type: "checkbox" }), /* @__PURE__ */ React.createElement("span", null, "Debug logging to console"))), status ? /* @__PURE__ */ React.createElement("div", { style: s.statusGrid }, /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.flux) }), "Flux"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.mediaEngine) }), "MediaEngine (", status.mediaMethods.length, "/7)"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.audioActions) }), "AudioActions"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(Boolean(status.audioPath?.setters?.setOutputVolume)) }), "VSet"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.voiceActions) }), "Voice"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.channelActions) }), "Channel"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.messageActions) }), "Message"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.selectedChannel) }), "SelectedCh"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.discordUtils) }), "Native"), /* @__PURE__ */ React.createElement("span", null, /* @__PURE__ */ React.createElement("span", { style: s.statusDot(status.keycodeMap) }), "Keymap"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "platform: ", status.platform), /* @__PURE__ */ React.createElement("span", { style: s.small }, "out: ", status.outputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "in: ", status.inputVolume ?? "?"), /* @__PURE__ */ React.createElement("span", { style: s.small }, "mute: ", String(status.selfMute ?? "?")), /* @__PURE__ */ React.createElement("span", { style: s.small }, "deaf: ", String(status.selfDeaf ?? "?"))) : /* @__PURE__ */ React.createElement("div", { style: s.small }, "Status unavailable."), status && !status.mediaEngine ? /* @__PURE__ */ React.createElement("div", { style: s.small }, "Speaker controls not found \u2014 hit Deep scan, then Copy diagnostics.") : null, /* @__PURE__ */ React.createElement("pre", { ref: logPreRef, style: s.logPre }, log?.toText(80) || "(empty)"));
     }
     module2.exports = SettingsPanel2;
   }
