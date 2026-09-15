@@ -1,3 +1,9 @@
+## [2.7.3](https://github.com/srmlcn/better-keybinds/compare/v2.7.2...v2.7.3) (2026-09-15)
+
+### Bug Fixes
+
+* **stream:** match discord game capture with pid and name ([#1](https://github.com/srmlcn/better-keybinds/issues/1)) ([e4bb720](https://github.com/srmlcn/better-keybinds/commit/e4bb72078f36181da6ed727561540e2de16c24f4))
+
 ## [2.7.2](https://github.com/srmlcn/better-keybinds/compare/v2.7.1...v2.7.2) (2026-09-15)
 
 ### Bug Fixes
