@@ -293,6 +293,7 @@ async function runAction(type, params, ctx) {
       case "stream.startGame":
       case "stream.toggleGame":
         return await discord.toggleGameStream({
+          exePath: String(params?.gameExePath || "").trim(),
           name: String(params?.gameName || "").trim(),
           pid: values.gamePid
         });

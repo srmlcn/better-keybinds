@@ -66,9 +66,11 @@ The Streaming actions Go Live in your current voice channel and reuse Discord's 
 
 Behavior:
 
-- **Toggle game stream** streams the selected game, or Auto (foreground / most recently focused). Window capture first; exclusive fullscreen / error 2015 falls back to the primary screen. Press again to stop.
+- **Toggle game stream** streams the selected game, or Auto (foreground / most recently focused), the same way Discord's Go Live does: game capture with the game pid first (game name + icon), then the same window without the graphics hook, then the primary screen labeled `Game (screen)`. Matching is by process ID only — it never guesses a window from a title. Press again to stop.
 - **Toggle screen stream** streams the selected display, or Auto (primary screen, `screen:0`). Press again to stop.
 - **Stop streaming** ends your stream; it's a no-op when you're not live.
+
+Saved games survive restarts: a stale pid is re-resolved by executable, then name. If the saved game isn't running, the bind fails clearly instead of streaming the wrong window.
 
 Every stream start/stop is verified against Discord's live stream state before the toast reports success. Toggling while already live stops the current stream (game or screen).
 
@@ -131,8 +133,9 @@ If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps
 - **Global shows In-app only**: native module blocked or unsupported client — in-app still works. Re-check after Discord restart.
 - **Global chord does nothing on Linux/Mac**: platform keycodes come from Discord's key map with a Windows fallback; unresolvable keys are reported.
 - **"No game detected" toast**: Discord doesn't see a running game. Open the keybind, hit Refresh, and pick the game; or check Settings → Game Activity for "Now playing".
-- **"Couldn't find a window" toast**: the game was detected but has no capture source. Unminimize/restore the game window and retry. Exclusive fullscreen games often never appear as windows; the bind now falls back to the primary screen when one is available.
-- **"error 2015" / video timeout**: Discord created the stream but never got video frames. 2015 is Discord's viewer timeout (2012 is the same class; 2011/2014 are streamer-side). Common with exclusive fullscreen + a graphics hook on the game PID. The plugin starts game capture as a normal window share (no hook), then retries via the primary screen. If it still 2015s: borderless/windowed mode, hardware acceleration on, close other capture apps, reload Discord (Ctrl+R).
+- **"Couldn't find a window" toast**: the game was detected but has no capture source for its pid. Unminimize/restore the game window and retry. The bind never guesses by window title, so a missing pid means no window attempt. Exclusive fullscreen games often never appear as windows; the bind falls back to the primary screen labeled `Game (screen)` when one is available.
+- **"isn't running — Refresh and pick it again" toast**: the saved game pid went stale and the game isn't in Discord's list anymore. Hit Refresh on the keybind row and re-pick it.
+- **"error 2015" / video timeout**: Discord created the stream but never got video frames. 2015 is Discord's viewer timeout (2012 is the same class; 2011/2014 are streamer-side). Common with exclusive fullscreen + a graphics hook on the game PID. The plugin tries game capture first (pid, name + icon like Go Live), then the same window without the hook, then the primary screen. If it still 2015s: borderless/windowed mode, hardware acceleration on, close other capture apps, reload Discord (Ctrl+R).
 - **"Couldn't find your screen" toast**: Auto couldn't classify a display. Open the keybind, hit Refresh, and pick a screen. Default is the primary display (`screen:0`).
 - **"Couldn't reach screen capture" toast**: Discord's capture enumerator rejected the call. Reload Discord (Ctrl+R) and retry; if it persists, Copy diagnostics.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
