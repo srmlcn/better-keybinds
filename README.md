@@ -2,14 +2,14 @@
 
 Discord-style keybinds for things Discord doesn't bind: speaker volume 50% ↔ 100% toggle, mute/deafen, channel jumps, messages, toasts, URLs. Each row picks an action from a dropdown, sets its options, and records a chord.
 
-Installable file: `dist/BetterKeybinds.plugin.js` (single file, no dependencies).
+Installable file: `BetterKeybinds.plugin.js` (single file, no dependencies). Built by `npm run build`; not committed.
 
 ## Install
 
 1. Install [BetterDiscord](https://betterdiscord.app).
 2. If you used the previous `KeybindMacros.plugin.js`, delete it from the plugins folder first (this release renames the plugin and starts fresh).
-3. Build the plugin (`npm ci && npm run build`), or use a CI artifact named `BetterKeybinds-plugin`.
-4. Copy `dist/BetterKeybinds.plugin.js` into the BetterDiscord plugins folder (Discord Settings → BetterDiscord → Plugins → Open Plugin Folder).
+3. Get `BetterKeybinds.plugin.js` from the latest GitHub Release, a CI artifact named `BetterKeybinds-plugin`, or `npm ci && npm run build`.
+4. Copy it into the BetterDiscord plugins folder (Discord Settings → BetterDiscord → Plugins → Open Plugin Folder).
 5. Enable **BetterKeybinds** in the plugin list.
 6. Open its Settings → **Add keybind** → pick an action → click the keybind button → press your chord → release.
 
@@ -94,14 +94,12 @@ GitHub Actions (`.github/workflows/ci.yml`) on pull requests and `main`:
 |---|---|---|
 | **lint** | PR + `main` | ESLint. Pull requests also run commitlint on the PR commit range |
 | **test** | PR + `main` | `npm test` |
-| **build** | after lint + test | `npm run build`, uploads `BetterKeybinds-plugin` |
-| **release** | `main` only | [semantic-release](https://semantic-release.gitbook.io): bump, changelog, rebuild plugin, git tag, GitHub Release |
+| **build** | after lint + test | `npm run build`, uploads `BetterKeybinds-plugin` (build output is gitignored) |
+| **release** | `main` only | [semantic-release](https://semantic-release.gitbook.io): bump version, changelog, rebuild plugin, git tag, GitHub Release |
 
 Version bumps follow Conventional Commits: `feat` → minor, `fix` / `perf` → patch, `BREAKING CHANGE` footer → major. `ci`, `chore`, `docs`, `test`, `refactor`, and `build` do not bump.
 
-The GitHub Release attaches `dist/BetterKeybinds.plugin.js`. Release commits use `[skip ci]` so they do not loop.
-
-Baseline tag is `v2.6.6`. GitHub Actions needs that tag on `main` before the first automated release.
+The GitHub Release attaches the freshly built `BetterKeybinds.plugin.js`. Release commits update `package.json`, `package-lock.json`, and `CHANGELOG.md` only (`[skip ci]` so they do not loop). Next version is derived from git tags, not from files in `dist/`.
 
 Layout: `src/index.js` (plugin entry) · `src/lib/discord.js` (webpack bridge) · `src/lib/keybinds.js` · `src/lib/registrations.js` (in-app + global engine) · `src/lib/store.js` (persistence, import/export) · `src/lib/actions.js` (registry + executors) · `src/ui/SettingsPanel.jsx` (editor, native controls + `BdApi.React` only).
 
