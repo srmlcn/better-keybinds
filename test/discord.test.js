@@ -621,6 +621,10 @@ describe("source matching", () => {
     const sources = [{ id: "window:1:0", name: "Chat", sourcePid: 111 }, { id: "window:2:0", name: "DOOM", sourcePid: "4242" }];
     assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }).id, "window:2:0");
   });
+  it("does not treat window HWND ids as process ids", () => {
+    const sources = [{ id: "window:4242:0", name: "Unrelated", sourcePid: 99 }];
+    assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }), null);
+  });
   it("falls back to game and exe names", () => {
     const sources = [{ id: "window:2:0", name: "DOOM Eternal", sourcePid: null }];
     assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else" }).id, "window:2:0");
@@ -763,10 +767,13 @@ describe("stream actions", () => {
     });
     d.cache.set("mediaEngine", { getMediaEngine: () => ({ supports: () => true }) });
     d.cache.set("code:desktop sources", async () => sources ?? [{ id: "window:2:0", name: "DOOM", sourcePid: 4242 }]);
-    d.cache.set("code:type:\"STREAM_START\"", startFn || (async (guildId, channelId, opts) => {
+    const inner = startFn || (async (guildId, channelId, _opts, live) => {
+      live.stream = { channelId, guildId, ownerId: "u1", streamType: "guild" };
+    });
+    d.cache.set("code:type:\"STREAM_START\"", async (guildId, channelId, opts) => {
       calls.push([guildId, channelId, opts]);
-      state.stream = { channelId, guildId, ownerId: "u1", streamType: "guild" };
-    }));
+      return inner(guildId, channelId, opts, state);
+    });
     if (stopFn) d.cache.set("code:type:\"STREAM_STOP\"", stopFn);
     else {
       d.cache.set("code:type:\"STREAM_STOP\"", async () => {
@@ -783,7 +790,9 @@ describe("stream actions", () => {
     assert.equal(res.message, "Streaming Doom");
     assert.deepEqual(calls[0].slice(0, 2), ["g1", "vc1"]);
     assert.equal(calls[0][2].sourceId, "window:2:0");
-    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[0][2].pid, null);
+    assert.equal(calls[0][2].previewDisabled, false);
+    assert.equal(calls[0][2].sound, true);
   });
   it("no-ops start when already streaming", async () => {
     const { d } = streamBridge({ selfStream: { channelId: "vc1" } });
@@ -846,6 +855,48 @@ describe("stream actions", () => {
     assert.equal(res.ok, true);
     assert.equal(res.message, "Streaming Doom");
     assert.equal(calls[0][2].sourceId, "window:2:0");
+    assert.equal(calls[0][2].pid, null);
+  });
+  it("maps Discord 2015 and retries the game via screen", async () => {
+    const { calls, d } = streamBridge({
+      sources: [
+        { id: "window:2:0", name: "DOOM", sourcePid: 4242 },
+        { id: "screen:0:0", name: "Screen 1" }
+      ],
+      startFn: async (guildId, channelId, opts, live) => {
+        if (String(opts.sourceId).startsWith("window:")) {
+          const err = new Error("Video stream timeout (Viewer) 2015");
+          err.code = 2015;
+          throw err;
+        }
+        live.stream = { channelId, guildId, ownerId: "u1", streamType: "guild" };
+      }
+    });
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Doom (screen)");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0][2].sourceId, "window:2:0");
+    assert.equal(calls[1][2].sourceId, "screen:0:0");
+    assert.equal(calls[1][2].previewDisabled, false);
+  });
+  it("falls back to the primary screen when the game window is missing", async () => {
+    const { calls, d } = streamBridge({
+      sources: [
+        { id: "window:9:0", name: "Discord", sourcePid: 999 },
+        { id: "screen:0:0", name: "Screen 1" }
+      ]
+    });
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Doom");
+    assert.equal(calls[0][2].sourceId, "screen:0:0");
+  });
+  it("maps numeric stream errors", () => {
+    const d = new DiscordBridge({});
+    assert.match(d.describeStreamFailure({ code: 2015 }, "Doom").message, /error 2015/);
+    assert.match(d.describeStreamFailure(new Error("fail 2001 now"), "Doom").message, /error 2001/);
+    assert.equal(d.describeStreamFailure(new Error("nope"), "Doom").code, null);
   });
   it("stops the own stream and no-ops when idle", async () => {
     const idle = streamBridge({});

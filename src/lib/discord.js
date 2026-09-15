@@ -961,16 +961,21 @@ class DiscordBridge {
     return out;
   }
 
+  sourceProcessId(source) {
+    const pid = Number(source?.sourcePid ?? source?.pid);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  }
+
   // Match a detected game to a desktop capture source: process ID first,
-  // then game/exe name against window titles.
+  // then game/exe name against window titles. Never treat window:HWND as a
+  // PID — Electron ids are HWNDs, and a coincidental match plus Discord's
+  // graphics hook is a common 2015 (video timeout, no frames).
   matchGameSource(sources, game) {
     if (!Array.isArray(sources) || !game) return null;
     const pid = Number(game.pid);
     if (Number.isFinite(pid) && pid > 0) {
-      const byPid = sources.find((s) => Number(s?.sourcePid ?? s?.pid) === pid);
+      const byPid = sources.find((s) => this.sourceProcessId(s) === pid);
       if (byPid) return byPid;
-      const byId = sources.find((s) => String(s?.id || "").includes(`:${pid}:`) || String(s?.id || "").endsWith(`:${pid}`));
-      if (byId) return byId;
     }
     const norm = (s) => String(s || "").toLowerCase().replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, " ").trim();
     const exeBase = String(game.exePath || "").split(/[\\/]/).pop();
@@ -1059,6 +1064,8 @@ class DiscordBridge {
       const mixed = ["screen", "window"];
       await tryEnumerator([engine, isWindows, mixed, null], `enumerator-winflag(arity ${fn.length})`);
       if (!collected.length) await tryEnumerator([engine, mixed, null], "enumerator-legacy");
+      await tryEnumerator([engine, isWindows, ["window", "application"], null], "enumerator-apps-winflag");
+      await tryEnumerator([engine, ["window", "application"], null], "enumerator-apps-legacy");
       if (!this.listScreenSourcesFrom(collected).length) {
         await tryEnumerator([engine, isWindows, ["screen"], null], "enumerator-screens-winflag");
         if (!this.listScreenSourcesFrom(collected).length) {
@@ -1131,6 +1138,79 @@ class DiscordBridge {
     return true;
   }
 
+  isPreviewDisabled() {
+    try {
+      const state = this.getStreamingSettingsStore()?.getState?.();
+      if (state && typeof state.previewDisabled === "boolean") return state.previewDisabled;
+      if (state && typeof state.disableStreamPreviews === "boolean") return state.disableStreamPreviews;
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  getGoLiveSource() {
+    try {
+      const store = this.getMediaEngineStore();
+      if (store && typeof store.getGoLiveSource === "function") {
+        return store.getGoLiveSource() || null;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  hasGoLiveSourceApi() {
+    try {
+      return typeof this.getMediaEngineStore()?.getGoLiveSource === "function";
+    } catch {
+      return false;
+    }
+  }
+
+  // Discord's Go Live modal always sends these six keys. Omitting
+  // previewDisabled or sending a process id Discord then hooks is how
+  // STREAM_START succeeds and the local preview still dies with 2015.
+  buildStreamOptions(source, { pid = null } = {}) {
+    const sourceName = String(source?.name || "source");
+    return {
+      audioSourceId: sourceName,
+      pid: pid ?? null,
+      previewDisabled: this.isPreviewDisabled(),
+      sound: this.isSoundshareEnabled(),
+      sourceId: source.id,
+      sourceName
+    };
+  }
+
+  describeStreamFailure(error, label) {
+    const msg = String(error?.message || error || "");
+    const raw = error?.code ?? error?.errorCode ?? error?.err;
+    let code = Number(raw);
+    if (!Number.isFinite(code) || code <= 0) {
+      const match = /\b(2001|2011|2012|2014|2015)\b/.exec(msg);
+      code = match ? Number(match[1]) : null;
+    } else {
+      code = Number(code);
+    }
+    if (code === 2015 || code === 2012) {
+      return {
+        code,
+        message: `Couldn't start streaming ${label} — Discord timed out on video (error ${code}). Exclusive fullscreen games often need a screen share instead.`
+      };
+    }
+    if (code === 2011 || code === 2014) {
+      return {
+        code,
+        message: `Couldn't start streaming ${label} — Discord timed out sending video (error ${code}). Close other capture apps and retry.`
+      };
+    }
+    if (code === 2001) {
+      return {
+        code,
+        message: `Couldn't start streaming ${label} — Discord refused to start (error 2001). Reload Discord (Ctrl+R).`
+      };
+    }
+    return { code: null, message: `Couldn't start streaming ${label}.` };
+  }
+
   // Resolves the predicate's truthy value, or null on timeout.
   async waitFor(predicate, { intervalMs = 400, timeoutMs = 3500 } = {}) {
     const started = Date.now();
@@ -1154,31 +1234,58 @@ class DiscordBridge {
     return { channelId, guildId: this.channelGuildId(channel) };
   }
 
-  async beginStream({ channelId, guildId, label, pid = null, source }) {
+  async beginStream({ channelId, guildId, label, pid = null, requireCapture = false, source }) {
     const startFn = this.findCodeFunction('type:"STREAM_START"');
     if (!startFn || !source?.id) {
       return { ok: false, message: "Couldn't reach Discord's streaming controls — Discord may have updated." };
     }
-    const sound = this.isSoundshareEnabled();
-    const sourceName = source.name || label;
+    const options = this.buildStreamOptions(source, { pid });
     try {
-      await startFn(guildId ?? null, channelId, {
-        audioSourceId: sourceName,
-        pid: pid ?? null,
-        sound,
-        sourceId: source.id,
-        sourceName
-      });
+      await startFn(guildId ?? null, channelId, options);
     } catch (error) {
       this.warn(`stream start threw: ${error?.message || error}`);
-      return { ok: false, message: `Couldn't start streaming ${label}.` };
+      return { ok: false, ...this.describeStreamFailure(error, label) };
     }
     const live = await this.waitFor(() => this.getSelfStream());
-    if (live) {
-      this.info(`streaming ${label} (sound ${sound ? "on" : "off"})`);
-      return { ok: true, message: `Streaming ${label}` };
+    if (!live) {
+      return { ok: false, message: `Couldn't start streaming ${label} — try again.` };
     }
-    return { ok: false, message: `Couldn't start streaming ${label} — try again.` };
+    if (requireCapture && this.hasGoLiveSourceApi()) {
+      const attached = await this.waitFor(() => this.getGoLiveSource(), { timeoutMs: 2500 });
+      if (!attached) {
+        this.warn(`stream started but capture never attached for ${label}`);
+        await this.stopOwnStream();
+        return {
+          ok: false,
+          code: 2015,
+          message: `Couldn't start streaming ${label} — Discord timed out on video (error 2015). Exclusive fullscreen games often need a screen share instead.`
+        };
+      }
+    }
+    this.info(`streaming ${label} (sound ${options.sound ? "on" : "off"})`);
+    return { ok: true, message: `Streaming ${label}` };
+  }
+
+  gameStreamAttempts(sources, game) {
+    const label = game.name || "your game";
+    const windowSource = this.matchGameSource(sources, game);
+    const screen = this.pickScreenSource(sources);
+    const attempts = [];
+    // Window capture with pid null — Discord's graphics hook on pid is what
+    // surfaces error 2015 when the hook cannot produce frames.
+    if (windowSource && this.classifySource(windowSource) !== "screen") {
+      attempts.push({ label, pid: null, source: windowSource });
+    }
+    if (screen) {
+      attempts.push({
+        label: windowSource && this.classifySource(windowSource) !== "screen" ? `${label} (screen)` : label,
+        pid: null,
+        source: screen
+      });
+    } else if (windowSource && this.classifySource(windowSource) === "screen") {
+      attempts.push({ label, pid: null, source: windowSource });
+    }
+    return attempts;
   }
 
   async startGameStream(prefer = {}) {
@@ -1209,11 +1316,27 @@ class DiscordBridge {
     }
     if (!sources.length) return { ok: false, message: "No capture sources found." };
     const label = game.name || "your game";
-    const source = this.matchGameSource(sources, game);
-    if (!source) {
+    const attempts = this.gameStreamAttempts(sources, game);
+    if (!attempts.length) {
       return { ok: false, message: `Couldn't find a window for ${label} — make sure it's not minimized.` };
     }
-    return this.beginStream({ channelId: target.channelId, guildId: target.guildId, label, pid: game.pid ?? null, source });
+    let last = null;
+    for (let i = 0; i < attempts.length; i++) {
+      const attempt = attempts[i];
+      if (this.getSelfStream()) await this.stopOwnStream();
+      last = await this.beginStream({
+        channelId: target.channelId,
+        guildId: target.guildId,
+        requireCapture: true,
+        ...attempt
+      });
+      if (last.ok) {
+        if (i > 0) this.info(`game stream fell back to ${attempt.source.id}`);
+        return last;
+      }
+      this.warn(`game stream attempt ${i + 1}/${attempts.length} failed: ${last.message}`);
+    }
+    return last;
   }
 
   async startScreenStream(prefer = {}) {
