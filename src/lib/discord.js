@@ -1005,6 +1005,33 @@ class DiscordBridge {
     }
   }
 
+  // Observed-app lookup for an enumerated source. Discord's own callers
+  // pass the raw source id string while the type declaration says numeric
+  // handle — try the parsed handle first, then the raw id, first hit wins.
+  observedAppNameForSource(source) {
+    let fn = null;
+    try {
+      const store = this.getRunningGameStore();
+      if (typeof store?.getObservedAppNameForWindow === "function") {
+        fn = store.getObservedAppNameForWindow.bind(store);
+      }
+    } catch {
+      return null;
+    }
+    if (!fn) return null;
+    const id = String(source?.id || "");
+    const hwnd = this.windowHandleOf(source);
+    const attempts = hwnd ? [hwnd, id] : [id];
+    for (const arg of attempts) {
+      if (arg === "" || arg == null) continue;
+      try {
+        const name = fn(arg);
+        if (typeof name === "string" && name.trim()) return name;
+      } catch { /* try next form */ }
+    }
+    return null;
+  }
+
   // Identity strings for a detected game: executable basename and display
   // name, each raw-lowercased and tight (alphanumeric-only). Compared with
   // exact equality only — never substring.
@@ -1026,7 +1053,12 @@ class DiscordBridge {
     const raw = String(candidate || "").trim().toLowerCase();
     if (!raw) return false;
     if (identities.has(raw)) return true;
-    return identities.has(raw.replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, ""));
+    // Observed names may arrive as a full path; compare its basename too.
+    const base = raw.split(/[\\/]/).pop();
+    if (base && identities.has(base)) return true;
+    const tight = (s) => s.replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, "");
+    return Boolean(tight(raw) && identities.has(tight(raw)))
+      || Boolean(base && tight(base) && identities.has(tight(base)));
   }
 
   // Match a detected game to its capture sources. Enumerated desktop
@@ -1063,10 +1095,9 @@ class DiscordBridge {
     }
     const byObserved = [];
     for (const source of candidates) {
+      const observed = observedApi ? this.observedAppNameForSource(source) : null;
       const hwnd = this.windowHandleOf(source);
-      if (!hwnd) continue;
-      const observed = observedApi ? this.observedAppName(hwnd) : null;
-      this.debug(`game match ${source.id} "${source.name || ""}" hwnd ${hwnd} observed "${observed || "?"}"`);
+      this.debug(`game match ${source.id} "${source.name || ""}" hwnd ${hwnd || "?"} observed "${observed || "?"}"`);
       if (observed && this.identityMatches(identities, observed)) byObserved.push(source);
     }
     if (byObserved.length) {

@@ -655,6 +655,32 @@ describe("source matching", () => {
     assert.equal(d.observedAppName(1234), null);
     assert.equal(d.matchGameSource([{ id: "window:2:0", name: "DOOM" }], { name: "Doom", pid: 4242 }).id, "window:2:0");
   });
+  it("tries numeric handle then raw source id for observed lookup", () => {
+    const bridge = new DiscordBridge({});
+    const seen = [];
+    bridge.cache.set("runningGame", {
+      getObservedAppNameForWindow: (arg) => {
+        seen.push(arg);
+        if (typeof arg === "number") throw new Error("want string");
+        return arg === "window:555:0" ? "Rocket League" : null;
+      },
+      getRunningGames: () => [],
+      getVisibleGame: () => null
+    });
+    const game = { exePath: "C:\\Games\\RocketLeague.exe", name: "Rocket League", pid: 4242 };
+    assert.equal(bridge.matchGameSource([{ id: "window:555:0", name: "Rocket League" }], game).id, "window:555:0");
+    assert.deepEqual(seen, [555, "window:555:0"]);
+  });
+  it("matches observed full paths by basename", () => {
+    const bridge = new DiscordBridge({});
+    bridge.cache.set("runningGame", {
+      getObservedAppNameForWindow: () => "C:\\Games\\RocketLeague.exe",
+      getRunningGames: () => [],
+      getVisibleGame: () => null
+    });
+    const game = { exePath: "C:\\Games\\RocketLeague.exe", name: "Rocket League", pid: 4242 };
+    assert.equal(bridge.matchGameSource([{ id: "window:555:0", name: "RL" }], game).id, "window:555:0");
+  });
   it("prefers application sources over windows for the same pid", () => {
     const sources = [
       { id: "window:2:0", name: "DOOM", sourcePid: 4242 },
