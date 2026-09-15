@@ -481,8 +481,8 @@ function SettingsPanel(props) {
     if (spec.type === "game") {
       const current = String(value || "");
       const options = [
-        { pid: "", name: "Auto (detected game)" },
-        ...gameSources.filter((g) => g.pid != null).map((g) => ({ pid: String(g.pid), name: g.name }))
+        { exePath: "", pid: "", name: "Auto (detected game)" },
+        ...gameSources.filter((g) => g.pid != null).map((g) => ({ exePath: g.exePath || "", pid: String(g.pid), name: g.name }))
       ];
       const unique = [];
       const seen = new Set();
@@ -493,7 +493,7 @@ function SettingsPanel(props) {
         unique.push(o);
       }
       if (current && !unique.some((o) => o.pid === current)) {
-        unique.push({ pid: current, name: bind.params?.gameName || `PID ${current}` });
+        unique.push({ exePath: bind.params?.gameExePath || "", pid: current, name: bind.params?.gameName || `PID ${current}` });
       }
       return (
         <label key={spec.key} style={{ ...s.param, flex: "1 1 260px" }}>
@@ -502,7 +502,7 @@ function SettingsPanel(props) {
             onChange={(e) => {
               const pid = e.target.value;
               const hit = gameSources.find((g) => String(g.pid) === pid);
-              updateBind(bind.id, { params: { ...bind.params, gameName: hit?.name || "", gamePid: pid } });
+              updateBind(bind.id, { params: { ...bind.params, gameExePath: hit?.exePath || "", gameName: hit?.name || "", gamePid: pid } });
             }}
             style={{ ...s.input, flex: 1 }}
             value={current}

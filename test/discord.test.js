@@ -625,11 +625,27 @@ describe("source matching", () => {
     const sources = [{ id: "window:4242:0", name: "Unrelated", sourcePid: 99 }];
     assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }), null);
   });
-  it("falls back to game and exe names", () => {
+  it("never guesses by title — pid only, no random window", () => {
     const sources = [{ id: "window:2:0", name: "DOOM Eternal", sourcePid: null }];
-    assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else" }).id, "window:2:0");
-    assert.equal(d.matchGameSource(sources, { name: "Unrelated" }), null);
+    assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else", pid: 4242 }), null);
+    assert.equal(d.matchGameSource(sources, { name: "DOOM Eternal", pid: null }), null);
     assert.equal(d.matchGameSource([], { name: "Doom", pid: 1 }), null);
+  });
+  it("prefers application sources over windows for the same pid", () => {
+    const sources = [
+      { id: "window:2:0", name: "DOOM", sourcePid: 4242 },
+      { id: "application:1", name: "Doom", sourcePid: 4242, type: "application" }
+    ];
+    assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }).id, "application:1");
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(d.matchGameSources(sources, { name: "Doom", pid: 4242 })).map(([k, v]) => [k, v?.id || null])),
+      { application: "application:1", window: "window:2:0" }
+    );
+  });
+  it("parses pids from application ids but never window HWNDs", () => {
+    assert.equal(d.sourceProcessId({ id: "application:4242" }), 4242);
+    assert.equal(d.sourceProcessId({ id: "window:4242:0" }), null);
+    assert.equal(d.classifySource({ id: "application:1", name: "Doom" }), "application");
   });
   it("picks screen sources by type or id", () => {
     assert.equal(d.pickScreenSource([{ id: "window:1:0" }, { id: "screen:0:0" }]).id, "screen:0:0");
@@ -790,7 +806,9 @@ describe("stream actions", () => {
     assert.equal(res.message, "Streaming Doom");
     assert.deepEqual(calls[0].slice(0, 2), ["g1", "vc1"]);
     assert.equal(calls[0][2].sourceId, "window:2:0");
-    assert.equal(calls[0][2].pid, null);
+    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[0][2].sourceName, "Doom");
+    assert.equal(calls[0][2].audioSourceId, "Doom");
     assert.equal(calls[0][2].previewDisabled, false);
     assert.equal(calls[0][2].sound, true);
   });
@@ -855,7 +873,37 @@ describe("stream actions", () => {
     assert.equal(res.ok, true);
     assert.equal(res.message, "Streaming Doom");
     assert.equal(calls[0][2].sourceId, "window:2:0");
-    assert.equal(calls[0][2].pid, null);
+    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[0][2].sourceName, "Doom");
+  });
+  it("re-resolves a stale saved pid by exe and name", async () => {
+    const { calls, d } = streamBridge({
+      games: [{ exePath: "C:\\Games\\doom.exe", lastFocused: 1, name: "Doom", pid: 7777 }],
+      sources: [{ id: "window:2:0", name: "DOOM", sourcePid: 7777 }]
+    });
+    const byExe = await d.startGameStream({ exePath: "C:\\Games\\doom.exe", pid: 4242, name: "Doom" });
+    assert.equal(byExe.ok, true);
+    assert.equal(calls[0][2].pid, 7777);
+    assert.equal(calls[0][2].sourceName, "Doom");
+  });
+  it("fails clearly when the saved game is no longer running", async () => {
+    const { d } = streamBridge({ games: [{ lastFocused: 1, name: "Other", pid: 1111 }] });
+    const res = await d.startGameStream({ pid: 4242, name: "Doom" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Refresh this keybind/);
+  });
+  it("prefers the application source for game identity", async () => {
+    const { calls, d } = streamBridge({
+      sources: [
+        { id: "window:2:0", name: "DOOM", sourcePid: 4242 },
+        { id: "application:9", name: "Doom", sourcePid: 4242, type: "application" }
+      ]
+    });
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.equal(calls[0][2].sourceId, "application:9");
+    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[0][2].sourceName, "Doom");
   });
   it("maps Discord 2015 and retries the game via screen", async () => {
     const { calls, d } = streamBridge({
@@ -875,10 +923,14 @@ describe("stream actions", () => {
     const res = await d.startGameStream();
     assert.equal(res.ok, true);
     assert.equal(res.message, "Streaming Doom (screen)");
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0][2].sourceId, "window:2:0");
-    assert.equal(calls[1][2].sourceId, "screen:0:0");
-    assert.equal(calls[1][2].previewDisabled, false);
+    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[1][2].sourceId, "window:2:0");
+    assert.equal(calls[1][2].pid, null);
+    assert.equal(calls[1][2].sourceName, "Doom");
+    assert.equal(calls[2][2].sourceId, "screen:0:0");
+    assert.equal(calls[2][2].previewDisabled, false);
   });
   it("falls back to the primary screen when the game window is missing", async () => {
     const { calls, d } = streamBridge({
@@ -889,7 +941,7 @@ describe("stream actions", () => {
     });
     const res = await d.startGameStream();
     assert.equal(res.ok, true);
-    assert.equal(res.message, "Streaming Doom");
+    assert.equal(res.message, "Streaming Doom (screen)");
     assert.equal(calls[0][2].sourceId, "screen:0:0");
   });
   it("maps numeric stream errors", () => {

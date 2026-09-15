@@ -911,11 +911,16 @@ class DiscordBridge {
       || /^(entire\s+)?(screen|display|monitor)\b/i.test(name)
     ) return "screen";
     if (type === "window" || id.startsWith("window:")) return "window";
+    if (type === "application" || id.startsWith("application:")) return "application";
     return type || "unknown";
   }
 
   isScreenSource(source) {
     return this.classifySource(source) === "screen";
+  }
+
+  isApplicationSource(source) {
+    return this.classifySource(source) === "application";
   }
 
   screenIndex(source) {
@@ -963,31 +968,42 @@ class DiscordBridge {
 
   sourceProcessId(source) {
     const pid = Number(source?.sourcePid ?? source?.pid);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  }
-
-  // Match a detected game to a desktop capture source: process ID first,
-  // then game/exe name against window titles. Never treat window:HWND as a
-  // PID — Electron ids are HWNDs, and a coincidental match plus Discord's
-  // graphics hook is a common 2015 (video timeout, no frames).
-  matchGameSource(sources, game) {
-    if (!Array.isArray(sources) || !game) return null;
-    const pid = Number(game.pid);
-    if (Number.isFinite(pid) && pid > 0) {
-      const byPid = sources.find((s) => this.sourceProcessId(s) === pid);
-      if (byPid) return byPid;
-    }
-    const norm = (s) => String(s || "").toLowerCase().replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, " ").trim();
-    const exeBase = String(game.exePath || "").split(/[\\/]/).pop();
-    const wants = [game.name, exeBase].map(norm).filter(Boolean);
-    for (const want of wants) {
-      const hit = sources.find((s) => {
-        const name = norm(s?.name);
-        return name && (name.includes(want) || want.includes(name));
-      });
-      if (hit) return hit;
+    if (Number.isFinite(pid) && pid > 0) return pid;
+    // Application sources may encode the pid in the id (application:<pid>).
+    // Window ids are HWNDs and must never be parsed as pids.
+    const id = String(source?.id || "");
+    if (/^application:/i.test(id)) {
+      const match = /^application:(\d+)/i.exec(id);
+      if (match) {
+        const parsed = Number(match[1]);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+      }
     }
     return null;
+  }
+
+  // Match a detected game to its capture sources by process ID only.
+  // Discord's Go Live resolves game name/icon from the pid, so a fuzzy
+  // title match that lands on another app's window streams the wrong
+  // window while still reporting the game name. Never guess: when no
+  // source carries the game pid, return null and let the caller fall
+  // back to an explicitly labeled screen share or fail clearly.
+  // Prefers Discord's application source (game identity) over the raw
+  // window source when the enumerator returns both for the same pid.
+  matchGameSources(sources, game) {
+    if (!Array.isArray(sources) || !game) return { application: null, window: null };
+    const pid = Number(game.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return { application: null, window: null };
+    const matches = sources.filter((s) => this.sourceProcessId(s) === pid
+      && this.classifySource(s) !== "screen");
+    const application = matches.find((s) => this.isApplicationSource(s)) || null;
+    const window = matches.find((s) => !this.isApplicationSource(s)) || null;
+    return { application, window };
+  }
+
+  matchGameSource(sources, game) {
+    const { application, window } = this.matchGameSources(sources, game);
+    return application || window || null;
   }
 
   // Primary display first (screen:0 / "Screen 1"), then a saved id/name, then any screen.
@@ -1165,11 +1181,12 @@ class DiscordBridge {
     }
   }
 
-  // Discord's Go Live modal always sends these six keys. Omitting
-  // previewDisabled or sending a process id Discord then hooks is how
-  // STREAM_START succeeds and the local preview still dies with 2015.
-  buildStreamOptions(source, { pid = null } = {}) {
-    const sourceName = String(source?.name || "source");
+  // Discord's Go Live modal always sends these six keys. For game streams
+  // the pid is what associates the stream with the detected game (name +
+  // icon); without it Discord shows the raw window title instead. The
+  // name override keeps the game title even on the hook-free fallback.
+  buildStreamOptions(source, { name = null, pid = null } = {}) {
+    const sourceName = String(name || source?.name || "source");
     return {
       audioSourceId: sourceName,
       pid: pid ?? null,
@@ -1234,12 +1251,12 @@ class DiscordBridge {
     return { channelId, guildId: this.channelGuildId(channel) };
   }
 
-  async beginStream({ channelId, guildId, label, pid = null, requireCapture = false, source }) {
+  async beginStream({ channelId, guildId, label, name = null, pid = null, requireCapture = false, source }) {
     const startFn = this.findCodeFunction('type:"STREAM_START"');
     if (!startFn || !source?.id) {
       return { ok: false, message: "Couldn't reach Discord's streaming controls — Discord may have updated." };
     }
-    const options = this.buildStreamOptions(source, { pid });
+    const options = this.buildStreamOptions(source, { name, pid });
     try {
       await startFn(guildId ?? null, channelId, options);
     } catch (error) {
@@ -1268,34 +1285,62 @@ class DiscordBridge {
 
   gameStreamAttempts(sources, game) {
     const label = game.name || "your game";
-    const windowSource = this.matchGameSource(sources, game);
+    const pid = Number(game.pid) > 0 ? Number(game.pid) : null;
+    const { application, window } = this.matchGameSources(sources, game);
     const screen = this.pickScreenSource(sources);
     const attempts = [];
-    // Window capture with pid null — Discord's graphics hook on pid is what
-    // surfaces error 2015 when the hook cannot produce frames.
-    if (windowSource && this.classifySource(windowSource) !== "screen") {
-      attempts.push({ label, pid: null, source: windowSource });
+    // Discord-like order: game capture with pid first (name + icon via
+    // RunningGameStore), then the same window without the graphics hook
+    // for 2015-prone exclusive-fullscreen games, then primary screen.
+    // Every game attempt carries the game name so the stream title never
+    // falls back to the raw executable/window title.
+    if (application) attempts.push({ label, name: label, pid, source: application });
+    if (window && window !== application) attempts.push({ label, name: label, pid, source: window });
+    if (window && window !== application && pid) {
+      attempts.push({ label, name: label, pid: null, source: window });
     }
     if (screen) {
-      attempts.push({
-        label: windowSource && this.classifySource(windowSource) !== "screen" ? `${label} (screen)` : label,
-        pid: null,
-        source: screen
-      });
-    } else if (windowSource && this.classifySource(windowSource) === "screen") {
-      attempts.push({ label, pid: null, source: windowSource });
+      attempts.push({ label: `${label} (screen)`, pid: null, source: screen });
     }
     return attempts;
+  }
+
+  // Pids recycle on every launch, so a saved pid goes stale as soon as the
+  // game restarts. Re-resolve by executable, then name, before giving up.
+  resolveSavedGame(prefer = {}) {
+    const wantedPid = Number(prefer.pid);
+    if (!Number.isFinite(wantedPid) || wantedPid <= 0) return null;
+    const games = this.listGames();
+    const byPid = games.find((g) => g.pid === wantedPid);
+    if (byPid) return byPid;
+    const exeBase = (p) => String(p || "").split(/[\\/]/).pop().toLowerCase();
+    const wantExe = exeBase(prefer.exePath);
+    if (wantExe) {
+      const byExe = games.find((g) => g.exePath && exeBase(g.exePath) === wantExe);
+      if (byExe) {
+        this.debug(`saved game pid ${wantedPid} stale; re-resolved ${byExe.name} to pid ${byExe.pid} via exe`);
+        return byExe;
+      }
+    }
+    const wantName = String(prefer.name || "").trim().toLowerCase();
+    if (wantName) {
+      const byName = games.find((g) => String(g.name || "").trim().toLowerCase() === wantName);
+      if (byName) {
+        this.debug(`saved game pid ${wantedPid} stale; re-resolved ${byName.name} to pid ${byName.pid} via name`);
+        return byName;
+      }
+    }
+    return { name: String(prefer.name || "").trim() || "your game", pid: wantedPid, stale: true };
   }
 
   async startGameStream(prefer = {}) {
     const target = await this.resolveStreamTarget();
     if (target.error) return { ok: false, message: target.error };
     if (this.getSelfStream()) return { ok: true, message: "Already streaming — stop first to switch." };
-    const wantedPid = Number(prefer.pid);
-    const saved = Number.isFinite(wantedPid) && wantedPid > 0
-      ? (this.listGames().find((g) => g.pid === wantedPid) || { name: String(prefer.name || "").trim() || "your game", pid: wantedPid })
-      : null;
+    const saved = this.resolveSavedGame(prefer);
+    if (saved?.stale) {
+      return { ok: false, message: `Couldn't find ${saved.name} running — Refresh this keybind and pick it again.` };
+    }
     const picked = saved ? null : this.pickGame();
     const game = saved || picked?.game;
     if (!game) {

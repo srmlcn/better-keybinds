@@ -146,8 +146,8 @@ describe("stream actions", () => {
       toggleScreenStream: async (opts) => { screen = opts; return { message: "ok", ok: true }; }
     });
     await a.runBind({ params: { sourceId: "screen:1:0", sourceName: "Screen 2" }, type: "stream.startScreen" }, { discord });
-    await a.runBind({ params: { gameName: "Doom", gamePid: "4242" }, type: "stream.startGame" }, { discord });
+    await a.runBind({ params: { gameExePath: "C:\\Games\\doom.exe", gameName: "Doom", gamePid: "4242" }, type: "stream.startGame" }, { discord });
     assert.deepEqual(screen, { sourceId: "screen:1:0", sourceName: "Screen 2" });
-    assert.deepEqual(game, { name: "Doom", pid: "4242" });
+    assert.deepEqual(game, { exePath: "C:\\Games\\doom.exe", name: "Doom", pid: "4242" });
   });
 });
