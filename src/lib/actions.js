@@ -314,6 +314,8 @@ async function runAction(type, params, ctx) {
       case "soundboard.play": {
         if (!values.soundId) return { message: "Pick a sound for this keybind first.", ok: false };
         return await discord.playSoundboardSound({
+          emojiId: params?.emojiId ?? null,
+          emojiName: params?.emojiName ?? null,
           soundId: values.soundId,
           soundName: String(params?.soundName || "").trim(),
           sourceGuildId: String(params?.sourceGuildId || "").trim()

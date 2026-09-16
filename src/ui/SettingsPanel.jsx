@@ -553,7 +553,7 @@ function SettingsPanel(props) {
             onChange={(e) => {
               const soundId = e.target.value;
               const hit = soundSources.find((snd) => String(snd.soundId) === soundId);
-              updateBind(bind.id, { params: { ...bind.params, soundId, soundName: hit?.name || "", sourceGuildId: hit?.guildId || "" } });
+              updateBind(bind.id, { params: { ...bind.params, emojiId: hit?.emojiId ?? null, emojiName: hit?.emojiName ?? null, soundId, soundName: hit?.name || "", sourceGuildId: hit?.guildId || "" } });
             }}
             style={{ ...s.input, flex: 1 }}
             value={current}
