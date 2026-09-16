@@ -52,6 +52,7 @@ function SettingsPanel(props) {
   const [debugOn, setDebugOn] = React.useState(settings?.debugLogging !== false);
   const [screenSources, setScreenSources] = React.useState([]);
   const [gameSources, setGameSources] = React.useState([]);
+  const [soundSources, setSoundSources] = React.useState([]);
   const [captureLoad, setCaptureLoad] = React.useState("idle");
   const pressedRef = React.useRef(new Set());
   const collectedRef = React.useRef([]);
@@ -78,6 +79,7 @@ function SettingsPanel(props) {
   }, [discord]);
 
   const needsCapture = binds.some((b) => b.type === "stream.startScreen" || b.type === "stream.startGame");
+  const needsSoundboard = binds.some((b) => b.type === "soundboard.play");
 
   async function refreshCapture() {
     setCaptureLoad("loading");
@@ -109,6 +111,24 @@ function SettingsPanel(props) {
     void refreshCapture();
     return undefined;
   }, [needsCapture, discord]);
+
+  async function refreshSounds() {
+    setCaptureLoad("loading");
+    try {
+      const sounds = await discord?.listSoundboardSounds?.() || [];
+      setSoundSources(Array.isArray(sounds) ? sounds : []);
+      setCaptureLoad(sounds.length ? "ok" : "empty");
+    } catch {
+      setSoundSources([]);
+      setCaptureLoad("error");
+    }
+  }
+
+  React.useEffect(() => {
+    if (!needsSoundboard) return undefined;
+    void refreshSounds();
+    return undefined;
+  }, [needsSoundboard, discord]);
 
   function commit(next) {
     setBinds(next);
@@ -517,6 +537,37 @@ function SettingsPanel(props) {
         </label>
       );
     }
+    if (spec.type === "sound") {
+      const current = String(value || "");
+      const options = [
+        { guildId: "", soundId: "", name: "Pick a sound…" },
+        ...soundSources.map((snd) => ({ guildId: snd.guildId || "", soundId: String(snd.soundId), name: snd.name }))
+      ];
+      if (current && !options.some((o) => o.soundId === current)) {
+        options.push({ guildId: bind.params?.sourceGuildId || "", soundId: current, name: bind.params?.soundName || `Sound ${current}` });
+      }
+      return (
+        <label key={spec.key} style={{ ...s.param, flex: "1 1 260px" }}>
+          <span style={s.label}>{spec.label}</span>
+          <select
+            onChange={(e) => {
+              const soundId = e.target.value;
+              const hit = soundSources.find((snd) => String(snd.soundId) === soundId);
+              updateBind(bind.id, { params: { ...bind.params, soundId, soundName: hit?.name || "", sourceGuildId: hit?.guildId || "" } });
+            }}
+            style={{ ...s.input, flex: 1 }}
+            value={current}
+          >
+            {options.map((o) => (
+              <option key={o.soundId || "none"} value={o.soundId}>{o.name}</option>
+            ))}
+          </select>
+          <button onClick={() => void refreshSounds()} style={s.btn} type="button">
+            {captureLoad === "loading" ? "…" : "Refresh"}
+          </button>
+        </label>
+      );
+    }
     if (spec.type === "textarea") {
       return (
         <label key={spec.key} style={{ ...s.param, flex: "1 1 220px" }}>
@@ -693,6 +744,7 @@ function SettingsPanel(props) {
           <span><span style={s.statusDot(status.discordUtils)} />Native</span>
           <span><span style={s.statusDot(status.keycodeMap)} />Keymap</span>
           <span><span style={s.statusDot(status.streaming?.ready)} />Stream</span>
+          <span><span style={s.statusDot(status.soundboard?.ready)} />Sound</span>
           <span style={s.small}>platform: {status.platform}</span>
           <span style={s.small}>out: {status.outputVolume ?? (status.outputTracked ?? "?")}{status.outputVolume == null && status.outputTracked != null ? "~" : ""}{status.outputAmplitude != null ? ` amp ${Math.round(status.outputAmplitude * 10) / 10}` : ""}</span>
           <span style={s.small}>in: {status.inputVolume ?? (status.inputTracked ?? "?")}{status.inputVolume == null && status.inputTracked != null ? "~" : ""}{status.inputAmplitude != null ? ` amp ${Math.round(status.inputAmplitude * 10) / 10}` : ""}</span>
@@ -700,6 +752,7 @@ function SettingsPanel(props) {
           <span style={s.small}>deaf: {String(status.selfDeaf ?? "?")}</span>
           <span style={s.small}>live: {status.streaming?.selfStream ? "yes" : "no"}</span>
           <span style={s.small}>games: {status.streaming?.games ?? "?"}{status.streaming?.gameName ? ` (${status.streaming.gameName})` : ""}</span>
+          <span style={s.small}>sounds: {status.soundboard?.sounds ?? "?"}</span>
         </div>
       ) : (
         <div style={s.small}>Status unavailable.</div>
