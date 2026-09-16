@@ -151,3 +151,29 @@ describe("stream actions", () => {
     assert.deepEqual(game, { exePath: "C:\\Games\\doom.exe", name: "Doom", pid: "4242" });
   });
 });
+
+describe("soundboard actions", () => {
+  it("routes sound binds to the bridge", async () => {
+    let got = null;
+    const discord = fakeDiscord({
+      playSoundboardSound: async (opts) => { got = opts; return { message: "Playing Horn", ok: true }; }
+    });
+    const res = await a.runBind({ params: { soundId: "s1", soundName: "Horn", sourceGuildId: "g1" }, type: "soundboard.play" }, { discord });
+    assert.equal(res.message, "Playing Horn");
+    assert.deepEqual(got, { soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
+  });
+  it("rejects empty sounds before touching the bridge", async () => {
+    let called = false;
+    const discord = fakeDiscord({ playSoundboardSound: async () => { called = true; return { ok: true }; } });
+    const res = await a.runBind({ params: {}, type: "soundboard.play" }, { discord });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Pick a sound/);
+    assert.equal(called, false);
+  });
+  it("validates sound params", () => {
+    assert.deepEqual(a.validateAction("soundboard.play", {}), []);
+    assert.deepEqual(a.validateAction("soundboard.play", { soundId: "s1" }), []);
+    assert.equal(a.getActionDef("soundboard.play").label, "Play soundboard sound");
+    assert.ok(a.actionTypes().includes("soundboard.play"));
+  });
+});

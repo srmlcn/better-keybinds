@@ -1036,3 +1036,86 @@ describe("streaming probe", () => {
     assert.match(d.probeSummary(), /stm:MISS live:n/);
   });
 });
+
+describe("soundboard", () => {
+  function soundBridge({ deafened = false, inVoice = true, muted = false, playing = true, send = null, sounds = null } = {}) {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => (inVoice ? "vc1" : null) });
+    d.cache.set("mediaEngine", { isSelfDeaf: () => deafened, isSelfMute: () => muted });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map([["g1", sounds ?? [
+        { available: false, guildId: "g1", name: "Retired", soundId: "s0" },
+        { available: true, guildId: "g1", name: "Horn", soundId: "s1" },
+        { available: true, guildId: "g1", name: "Drum", soundId: "s2" }
+      ]]]),
+      getSoundsForGuild: () => null,
+      isPlayingSound: (id) => playing && id === "s1",
+      isUserPlayingSounds: () => false
+    });
+    d.cache.set("code:send-soundboard-sound", send || (async (channelId, soundId, guildId) => {
+      calls.push([channelId, soundId, guildId]);
+    }));
+    return { calls, d };
+  }
+  it("lists available sounds sorted by name", () => {
+    const { d } = soundBridge({});
+    assert.deepEqual(d.listSoundboardSounds(), [
+      { available: true, guildId: "g1", name: "Drum", soundId: "s2" },
+      { available: true, guildId: "g1", name: "Horn", soundId: "s1" }
+    ]);
+  });
+  it("plays the picked sound and verifies", async () => {
+    const { calls, d } = soundBridge({});
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+    assert.deepEqual(calls, [["vc1", "s1", "g1"]]);
+  });
+  it("rejects missing sound, voice, and muted states", async () => {
+    const { d } = soundBridge({});
+    assert.match((await d.playSoundboardSound({})).message, /Pick a sound/);
+    assert.match((await soundBridge({ inVoice: false }).d.playSoundboardSound({ soundId: "s1" })).message, /Join a voice channel/);
+    assert.match((await soundBridge({ muted: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Unmute/);
+    assert.match((await soundBridge({ deafened: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Undeafen/);
+  });
+  it("fails clearly for stale sounds", async () => {
+    const { d } = soundBridge({});
+    const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Refresh this keybind/);
+  });
+  it("reports send failures", async () => {
+    const { d } = soundBridge({ send: async () => { throw new Error("rate limited"); } });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /rate limited/);
+  });
+  it("reports unconfirmed plays as success", async () => {
+    const { d } = soundBridge({ playing: false });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.match(res.message, /couldn't confirm/);
+  });
+  it("supports the 2-arg send signature", async () => {
+    const calls = [];
+    const { d } = soundBridge({ send: async (channelId, payload) => { calls.push([channelId, payload]); } });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
+    assert.equal(res.ok, true);
+    assert.deepEqual(calls, [["vc1", { soundId: "s1", sourceGuildId: "g1" }]]);
+  });
+  it("probes soundboard readiness", () => {
+    const { d } = soundBridge({});
+    assert.deepEqual(d.probeSoundboard(), { ready: true, sendFn: true, sounds: 2, store: true, voiceChannel: "vc1" });
+    assert.match(d.probeSummary(), /sb:ok snd:2/);
+    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, sendFn found/);
+    assert.match(d.diagnosticsText("HEADER"), /sounds: 2/);
+  });
+  it("degrades without modules", async () => {
+    const d = new DiscordBridge({});
+    assert.deepEqual(d.listSoundboardSounds(), []);
+    assert.equal(d.probeSoundboard().ready, false);
+    assert.match((await d.playSoundboardSound({ soundId: "s1" })).message, /Join a voice channel/);
+    assert.match(d.probeSummary(), /sb:MISS/);
+  });
+});
