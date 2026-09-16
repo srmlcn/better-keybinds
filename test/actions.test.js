@@ -158,9 +158,9 @@ describe("soundboard actions", () => {
     const discord = fakeDiscord({
       playSoundboardSound: async (opts) => { got = opts; return { message: "Playing Horn", ok: true }; }
     });
-    const res = await a.runBind({ params: { soundId: "s1", soundName: "Horn", sourceGuildId: "g1" }, type: "soundboard.play" }, { discord });
+    const res = await a.runBind({ params: { emojiId: null, emojiName: "📯", soundId: "s1", soundName: "Horn", sourceGuildId: "g1" }, type: "soundboard.play" }, { discord });
     assert.equal(res.message, "Playing Horn");
-    assert.deepEqual(got, { soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
+    assert.deepEqual(got, { emojiId: null, emojiName: "📯", soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
   });
   it("rejects empty sounds before touching the bridge", async () => {
     let called = false;

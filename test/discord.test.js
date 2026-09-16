@@ -1038,7 +1038,7 @@ describe("streaming probe", () => {
 });
 
 describe("soundboard", () => {
-  function soundBridge({ deafened = false, inVoice = true, muted = false, playing = true, send = null, sounds = null } = {}) {
+  function soundBridge({ deafened = false, inVoice = true, localPlay = null, muted = false, playing = true, post = null, restApi = null, sounds = null } = {}) {
     const calls = [];
     const d = new DiscordBridge({});
     d.cache.set("selectedChannel", { getVoiceChannelId: () => (inVoice ? "vc1" : null) });
@@ -1046,31 +1046,56 @@ describe("soundboard", () => {
     d.cache.set("soundboard", {
       getSounds: () => new Map([["g1", sounds ?? [
         { available: false, guildId: "g1", name: "Retired", soundId: "s0" },
-        { available: true, guildId: "g1", name: "Horn", soundId: "s1" },
-        { available: true, guildId: "g1", name: "Drum", soundId: "s2" }
+        { available: true, emojiId: null, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" },
+        { available: true, emojiId: "e2", emojiName: null, guildId: "g1", name: "Drum", soundId: "s2" }
       ]]]),
       getSoundsForGuild: () => null,
       isPlayingSound: (id) => playing && id === "s1",
       isUserPlayingSounds: () => false
     });
-    d.cache.set("code:send-soundboard-sound", send || (async (channelId, soundId, guildId) => {
-      calls.push([channelId, soundId, guildId]);
-    }));
+    if (restApi !== false) {
+      d.cache.set("restApi", restApi || {
+        del: async () => {},
+        post: post || (async ({ body, url }) => { calls.push(["post", url, body]); }),
+        put: async () => {}
+      });
+    }
+    if (localPlay !== false) {
+      d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", localPlay || ((channelId, sound, trigger) => {
+        calls.push(["local", channelId, sound, trigger]);
+      }));
+    }
     return { calls, d };
   }
   it("lists available sounds sorted by name", () => {
     const { d } = soundBridge({});
     assert.deepEqual(d.listSoundboardSounds(), [
-      { available: true, guildId: "g1", name: "Drum", soundId: "s2" },
-      { available: true, guildId: "g1", name: "Horn", soundId: "s1" }
+      { available: true, emojiId: "e2", emojiName: null, guildId: "g1", name: "Drum", soundId: "s2" },
+      { available: true, emojiId: null, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" }
     ]);
   });
-  it("plays the picked sound and verifies", async () => {
+  it("plays via local audio plus REST post", async () => {
     const { calls, d } = soundBridge({});
     const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
     assert.equal(res.ok, true);
     assert.equal(res.message, "Playing Horn");
-    assert.deepEqual(calls, [["vc1", "s1", "g1"]]);
+    assert.equal(calls[0][0], "local");
+    assert.equal(calls[0][1], "vc1");
+    assert.equal(calls[0][2].soundId, "s1");
+    assert.equal(calls[0][2].emojiName, "📯");
+    assert.equal(calls[0][3], 1);
+    assert.deepEqual(calls[1], ["post", "/channels/vc1/send-soundboard-sound", {
+      emoji_id: null,
+      emoji_name: "📯",
+      sound_id: "s1",
+      source_guild_id: "g1"
+    }]);
+  });
+  it("prefers explicit emoji params over store values", async () => {
+    const { calls, d } = soundBridge({});
+    await d.playSoundboardSound({ emojiId: "e9", emojiName: "bell", soundId: "s1" });
+    assert.equal(calls[1][2].emoji_id, "e9");
+    assert.equal(calls[1][2].emoji_name, "bell");
   });
   it("rejects missing sound, voice, and muted states", async () => {
     const { d } = soundBridge({});
@@ -1079,6 +1104,10 @@ describe("soundboard", () => {
     assert.match((await soundBridge({ muted: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Unmute/);
     assert.match((await soundBridge({ deafened: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Undeafen/);
   });
+  it("names the missing play leg", async () => {
+    assert.match((await soundBridge({ restApi: false }).d.playSoundboardSound({ soundId: "s1" })).message, /request module/);
+    assert.match((await soundBridge({ localPlay: false }).d.playSoundboardSound({ soundId: "s1" })).message, /open the soundboard panel once/);
+  });
   it("fails clearly for stale sounds", async () => {
     const { d } = soundBridge({});
     const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
@@ -1086,10 +1115,18 @@ describe("soundboard", () => {
     assert.match(res.message, /Refresh this keybind/);
   });
   it("reports send failures", async () => {
-    const { d } = soundBridge({ send: async () => { throw new Error("rate limited"); } });
+    const { d } = soundBridge({ post: async () => { throw new Error("network down"); } });
     const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
     assert.equal(res.ok, false);
-    assert.match(res.message, /rate limited/);
+    assert.match(res.message, /network down/);
+  });
+  it("maps rate limits to the cooldown message", async () => {
+    const limited = soundBridge({ post: async () => { throw Object.assign(new Error("429"), { status: 429 }); } });
+    assert.match((await limited.d.playSoundboardSound({ soundId: "s1" })).message, /one per 5 seconds/);
+    const d = new DiscordBridge({});
+    assert.equal(d.isRateLimit({ status: 429 }), true);
+    assert.equal(d.isRateLimit(new Error("rate limited")), true);
+    assert.equal(d.isRateLimit(new Error("nope")), false);
   });
   it("reports unconfirmed plays as success", async () => {
     const { d } = soundBridge({ playing: false });
@@ -1097,18 +1134,11 @@ describe("soundboard", () => {
     assert.equal(res.ok, true);
     assert.match(res.message, /couldn't confirm/);
   });
-  it("supports the 2-arg send signature", async () => {
-    const calls = [];
-    const { d } = soundBridge({ send: async (channelId, payload) => { calls.push([channelId, payload]); } });
-    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
-    assert.equal(res.ok, true);
-    assert.deepEqual(calls, [["vc1", { soundId: "s1", sourceGuildId: "g1" }]]);
-  });
   it("probes soundboard readiness", () => {
     const { d } = soundBridge({});
-    assert.deepEqual(d.probeSoundboard(), { ready: true, sendFn: true, sounds: 2, store: true, voiceChannel: "vc1" });
+    assert.deepEqual(d.probeSoundboard(), { localPlay: true, ready: true, restApi: true, sounds: 2, store: true, voiceChannel: "vc1" });
     assert.match(d.probeSummary(), /sb:ok snd:2/);
-    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, sendFn found/);
+    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, rest found, localPlay found/);
     assert.match(d.diagnosticsText("HEADER"), /sounds: 2/);
   });
   it("degrades without modules", async () => {
