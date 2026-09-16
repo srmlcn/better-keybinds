@@ -1,6 +1,6 @@
 # Better Keybinds (BetterDiscord plugin)
 
-Discord-style keybinds for things Discord doesn't bind: speaker volume 50% ↔ 100% toggle, mute/deafen, channel jumps, messages, toasts, URLs. Each row picks an action from a dropdown, sets its options, and records a chord.
+Discord-style keybinds for things Discord doesn't bind: speaker volume 50% ↔ 100% toggle, mute/deafen, channel jumps, messages, toasts, URLs, soundboard sounds. Each row picks an action from a dropdown, sets its options, and records a chord.
 
 Installable file: `BetterKeybinds.plugin.js` (single file, no dependencies). Built by `npm run build`; not committed.
 
@@ -28,6 +28,7 @@ Installable file: `BetterKeybinds.plugin.js` (single file, no dependencies). Bui
 | Input volume | Set / Adjust | Mic level, same 0–100 scale |
 | Self voice | Toggle/Set mute, Toggle/Set deafen, Disconnect | Set is a no-op when already in that state |
 | Streaming | Toggle game, Toggle screen, Stop | Game/screen picker on the bind; Auto uses detection / primary display |
+| Soundboard | Play soundboard sound | Sound picker on the bind; plays in current voice |
 | Channels | Go to channel | Needs Guild + Channel ID (Developer Mode → Copy ID) |
 | Messages | Send message | Current channel, or a saved channel ID |
 | Utility | Toast, Open URL | Toast is handy for testing that a chord fires |
@@ -73,6 +74,18 @@ Behavior:
 Saved games survive restarts: a stale pid is re-resolved by executable, then name. If the saved game isn't running, the bind fails clearly instead of streaming the wrong window.
 
 Every stream start/stop is verified against Discord's live stream state before the toast reports success. Toggling while already live stops the current stream (game or screen).
+
+## Soundboard
+
+The Soundboard action plays a saved sound in your current voice channel. Requirements:
+
+- You're in a voice channel with soundboard enabled.
+- You have the `Use Soundboard` permission (`Use External Sounds` for cross-server sounds).
+- You're not muted or deafened.
+
+Pick the sound on the keybind row with **Refresh**; the picker lists your guild and default sounds. Every play is verified against Discord's playback state before the toast reports success. Sounds are short, so a fast clip can finish before confirmation — those report `Played X (couldn't confirm)` and still played.
+
+Saved sounds are matched by sound ID only. If a sound was deleted, the bind fails clearly instead of playing the wrong clip — hit **Refresh** and pick it again.
 
 ## Import / export
 
@@ -138,6 +151,7 @@ If MediaEngine shows MISSING while you're in voice, hit **Deep scan**: it sweeps
 - **"error 2015" / video timeout**: Discord created the stream but never got video frames. 2015 is Discord's viewer timeout (2012 is the same class; 2011/2014 are streamer-side). Common with exclusive fullscreen + a graphics hook on the game PID. The plugin tries game capture first (pid, name + icon like Go Live), then the same window without the hook, then the primary screen. If it still 2015s: borderless/windowed mode, hardware acceleration on, close other capture apps, reload Discord (Ctrl+R).
 - **"Couldn't find your screen" toast**: Auto couldn't classify a display. Open the keybind, hit Refresh, and pick a screen. Default is the primary display (`screen:0`).
 - **"Couldn't reach screen capture" toast**: Discord's capture enumerator rejected the call. Reload Discord (Ctrl+R) and retry; if it persists, Copy diagnostics.
+- **"Couldn't find {sound} — Refresh" toast**: the saved sound ID went stale (sound deleted or unavailable). Hit Refresh on the keybind row and re-pick it.
 - **Bind doesn't fire**: bind enabled? Chord assigned? No conflict? Single letters don't fire while typing.
 - Console access: the running instance is exposed as `globalThis.BetterKeybinds`.
 
