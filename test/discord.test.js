@@ -1118,7 +1118,34 @@ describe("soundboard", () => {
     const { d } = soundBridge({ post: async () => { throw new Error("network down"); } });
     const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
     assert.equal(res.ok, false);
-    assert.match(res.message, /network down/);
+    assert.equal(res.message, "Couldn't broadcast Horn: network down");
+  });
+  it("broadcasts despite a local-play throw and logs it", async () => {
+    const logged = [];
+    const { calls, d } = soundBridge({ localPlay: () => { throw new Error("local boom"); } });
+    d.log = { debug: () => {}, info: () => {}, warn: (t, m) => logged.push(m) };
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+    assert.equal(calls[0][0], "post");
+    assert.ok(logged.some((m) => m.includes("local-play") && m.includes("local boom")));
+  });
+  it("reports both legs down", async () => {
+    const { d } = soundBridge({
+      localPlay: () => { throw new Error("local boom"); },
+      post: async () => { throw new Error("network down"); }
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "Couldn't play Horn: network down");
+  });
+  it("extracts text from discord-shaped errors", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.soundboardErrorText(new Error("boom")), "boom");
+    assert.equal(d.soundboardErrorText({ body: { message: "Missing Permissions" }, status: 403 }), "Missing Permissions");
+    assert.equal(d.soundboardErrorText({ status: 400 }), "request failed (code 400)");
+    assert.equal(d.soundboardErrorText(null), "unknown error");
+    assert.equal(d.soundboardErrorText({}), "unknown error");
   });
   it("maps rate limits to the cooldown message", async () => {
     const limited = soundBridge({ post: async () => { throw Object.assign(new Error("429"), { status: 429 }); } });
@@ -1136,9 +1163,9 @@ describe("soundboard", () => {
   });
   it("probes soundboard readiness", () => {
     const { d } = soundBridge({});
-    assert.deepEqual(d.probeSoundboard(), { localPlay: true, ready: true, restApi: true, sounds: 2, store: true, voiceChannel: "vc1" });
+    assert.deepEqual(d.probeSoundboard(), { localPlay: true, localPlayArity: 3, ready: true, restApi: true, sounds: 2, store: true, voiceChannel: "vc1" });
     assert.match(d.probeSummary(), /sb:ok snd:2/);
-    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, rest found, localPlay found/);
+    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, rest found, localPlay found\(arity 3\)/);
     assert.match(d.diagnosticsText("HEADER"), /sounds: 2/);
   });
   it("degrades without modules", async () => {
@@ -1147,5 +1174,70 @@ describe("soundboard", () => {
     assert.equal(d.probeSoundboard().ready, false);
     assert.match((await d.playSoundboardSound({ soundId: "s1" })).message, /Join a voice channel/);
     assert.match(d.probeSummary(), /sb:MISS/);
+  });
+});
+
+describe("getSoundboardLocalPlayFn", () => {
+  function handler(action) {
+    return action && action.type === 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
+  }
+  function creator(channelId, sound, trigger) {
+    void channelId;
+    void sound;
+    void trigger;
+    return 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
+  }
+  it("prefers creator-shaped matches over handlers", () => {
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => [{ onEvent: handler }, { play: creator }]
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), creator);
+  });
+  it("takes the fast path without enumeration", () => {
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: (filter) => {
+          const container = { play: creator };
+          try {
+            return filter(container) ? container : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), creator);
+  });
+  it("falls back to handler-shaped matches and caches misses", () => {
+    const solo = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: (filter) => {
+          const container = { onEvent: handler };
+          try {
+            return filter(container) ? container : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    });
+    assert.equal(solo.getSoundboardLocalPlayFn(), handler);
+    let sweeps = 0;
+    const missing = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => { sweeps += 1; return []; }
+      }
+    });
+    assert.equal(missing.getSoundboardLocalPlayFn(), null);
+    assert.equal(missing.getSoundboardLocalPlayFn(), null);
+    assert.equal(sweeps, 2);
   });
 });
