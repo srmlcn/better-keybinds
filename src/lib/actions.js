@@ -129,6 +129,13 @@ const ACTION_DEFS = [
     type: "stream.stop"
   },
   {
+    category: "Soundboard",
+    description: "Play a soundboard sound in your current voice channel. Pick a sound in this row.",
+    label: "Play soundboard sound",
+    params: [{ default: "", key: "soundId", label: "Sound", type: "sound" }],
+    type: "soundboard.play"
+  },
+  {
     category: "Utility",
     description: "Show a BetterDiscord toast notification.",
     label: "Show toast",
@@ -213,7 +220,7 @@ function coerceParams(def, params) {
       values[spec.key] = value;
       continue;
     }
-    if (spec.type === "screen" || spec.type === "game") {
+    if (spec.type === "screen" || spec.type === "game" || spec.type === "sound") {
       values[spec.key] = String(raw ?? "").trim();
       continue;
     }
@@ -304,6 +311,14 @@ async function runAction(type, params, ctx) {
         });
       case "stream.stop":
         return await discord.stopOwnStream();
+      case "soundboard.play": {
+        if (!values.soundId) return { message: "Pick a sound for this keybind first.", ok: false };
+        return await discord.playSoundboardSound({
+          soundId: values.soundId,
+          soundName: String(params?.soundName || "").trim(),
+          sourceGuildId: String(params?.sourceGuildId || "").trim()
+        });
+      }
       case "nav.goToChannel":
         return discord.goToChannel(values.guildId.trim(), values.channelId.trim());
       case "message.send": {
