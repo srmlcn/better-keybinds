@@ -328,6 +328,14 @@ class DiscordBridge {
     });
   }
 
+  getSoundboardStore() {
+    return this.cached("soundboard", () => (
+      this.getStoreByName("SoundboardStore")
+      || this.findByProps("getSoundsForGuild", "getSoundById")
+      || this.findModule((m) => typeof m?.getSoundsForGuild === "function" && typeof m?.isPlayingSound === "function")
+    ));
+  }
+
   getChannelStore() {
     return this.cached("channelStore", () => (
       this.getStoreByName("ChannelStore")
@@ -1430,6 +1438,122 @@ class DiscordBridge {
     return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream(prefer);
   }
 
+  // ---- soundboard ----
+
+  // The play wrapper references the REST route in its source; the store
+  // itself is read-only. Same code-search pattern as STREAM_START.
+  getSoundboardSendFn() {
+    return this.findCodeFunction("send-soundboard-sound");
+  }
+
+  normalizeSoundboardSound(entry, fallbackGuildId = null) {
+    if (!entry || typeof entry !== "object") return null;
+    const soundId = entry.soundId ?? entry.sound_id ?? entry.id;
+    if (soundId == null || String(soundId) === "") return null;
+    return {
+      available: entry.available !== false,
+      guildId: entry.guildId ?? entry.guild_id ?? fallbackGuildId ?? null,
+      name: String(entry.name || "Sound"),
+      soundId: String(soundId)
+    };
+  }
+
+  // Guild sounds plus defaults, deduplicated by sound id. Unavailable
+  // sounds are dropped: firing them would fail at send time anyway.
+  listSoundboardSounds() {
+    const store = this.getSoundboardStore();
+    if (!store) return [];
+    const out = [];
+    const seen = new Set();
+    const push = (entry, guildId = null) => {
+      const sound = this.normalizeSoundboardSound(entry, guildId);
+      if (!sound || !sound.available || seen.has(sound.soundId)) return;
+      seen.add(sound.soundId);
+      out.push(sound);
+    };
+    try {
+      const all = typeof store.getSounds === "function" ? store.getSounds() : null;
+      if (all instanceof Map) {
+        for (const [guildId, sounds] of all) {
+          if (Array.isArray(sounds)) for (const s of sounds) push(s, String(guildId));
+        }
+      } else if (Array.isArray(all)) {
+        for (const s of all) push(s);
+      }
+    } catch { /* per-guild fallback below */ }
+    try {
+      if (typeof store.getSoundsForGuild === "function") {
+        for (const guildId of [this.getVoiceGuildId(), null]) {
+          const list = store.getSoundsForGuild(guildId);
+          if (Array.isArray(list)) for (const s of list) push(s, guildId);
+        }
+      }
+    } catch { /* getSounds result above stands */ }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }
+
+  getVoiceGuildId() {
+    try {
+      const channelId = this.getVoiceChannelId();
+      if (!channelId) return null;
+      return this.channelGuildId(this.getChannel(channelId));
+    } catch {
+      return null;
+    }
+  }
+
+  isSoundboardPlaying(soundId) {
+    try {
+      const store = this.getSoundboardStore();
+      if (!store) return null;
+      if (typeof store.isPlayingSound === "function" && store.isPlayingSound(soundId)) return true;
+      const me = this.getUserStore()?.getCurrentUser?.()?.id;
+      if (me && typeof store.isUserPlayingSounds === "function" && store.isUserPlayingSounds(me)) return true;
+      if (typeof store.isPlayingSound === "function" || typeof store.isUserPlayingSounds === "function") return false;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async playSoundboardSound({ soundId = null, soundName = null, sourceGuildId = null } = {}) {
+    const id = String(soundId || "").trim();
+    if (!id) return { ok: false, message: "Pick a sound for this keybind first." };
+    const label = String(soundName || "").trim() || "sound";
+    const channelId = this.getVoiceChannelId();
+    if (!channelId) return { ok: false, message: "Join a voice channel first, then try again." };
+    if (this.isSelfMute() === true) return { ok: false, message: "Unmute yourself first — muted users can't play sounds." };
+    if (this.isSelfDeaf() === true) return { ok: false, message: "Undeafen yourself first — deafened users can't play sounds." };
+    const sounds = this.listSoundboardSounds();
+    if (sounds.length && !sounds.some((s) => s.soundId === id)) {
+      return { ok: false, message: `Couldn't find ${label} — Refresh this keybind and pick it again.` };
+    }
+    const sendFn = this.getSoundboardSendFn();
+    if (typeof sendFn !== "function") {
+      return { ok: false, message: "Couldn't reach Discord's soundboard controls — Discord may have updated." };
+    }
+    const guildId = String(sourceGuildId || "").trim()
+      || sounds.find((s) => s.soundId === id)?.guildId
+      || null;
+    try {
+      const res = sendFn.length >= 3
+        ? sendFn(channelId, id, guildId)
+        : sendFn(channelId, { soundId: id, sourceGuildId: guildId });
+      if (res && typeof res.then === "function") await res;
+    } catch (error) {
+      this.warn(`soundboard play threw: ${error?.message || error}`);
+      return { ok: false, message: error?.message || `Couldn't play ${label}.` };
+    }
+    // Sounds are short; a fast clip can finish before the first poll, so a
+    // missed confirmation still reports success like volume writes do.
+    const confirmed = await this.waitFor(() => this.isSoundboardPlaying(id), { intervalMs: 250, timeoutMs: 2500 });
+    this.info(`soundboard played ${label} (${id}) in ${channelId}${confirmed ? "" : " (unconfirmed)"}`);
+    return confirmed
+      ? { ok: true, message: `Playing ${label}` }
+      : { ok: true, message: `Played ${label} (couldn't confirm)` };
+  }
+
   // Probe native helper modules for capture/voice APIs (keys only, cached).
   inspectNativeModules() {
     if (this.nativeCache) return this.nativeCache;
@@ -1717,6 +1841,26 @@ class DiscordBridge {
     };
   }
 
+  // Snapshot of soundboard dependencies: store, send wrapper,
+  // readable sound count, and voice presence.
+  probeSoundboard() {
+    const store = Boolean(this.getSoundboardStore());
+    const sendFn = typeof this.getSoundboardSendFn() === "function";
+    let sounds = null;
+    try {
+      sounds = store ? this.listSoundboardSounds().length : null;
+    } catch {
+      sounds = null;
+    }
+    return {
+      ready: store && sendFn,
+      sendFn,
+      sounds,
+      store,
+      voiceChannel: this.getVoiceChannelId()
+    };
+  }
+
   // Snapshot of every Discord dependency for the diagnostics panel.
   probe() {
     const media = this.getMediaEngineStore();
@@ -1746,6 +1890,7 @@ class DiscordBridge {
       selectedChannel: Boolean(this.getSelectedChannelStore()),
       selfDeaf: this.isSelfDeaf(),
       selfMute: this.isSelfMute(),
+      soundboard: this.probeSoundboard(),
       streaming: this.probeStreaming(),
       voiceActions: Boolean(this.getVoiceActions())
     };
@@ -1773,7 +1918,9 @@ class DiscordBridge {
       : ap.hasOutputVolumeSubscriber === false ? "NO" : "?";
     const s = p.streaming || {};
     const stm = `stm:${s.ready ? "ok" : "MISS"} live:${s.selfStream ? "Y" : "n"} g:${s.games ?? "?"}`;
-    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"} ${stm}`;
+    const sb = p.soundboard || {};
+    const snd = `sb:${sb.ready ? "ok" : "MISS"} snd:${sb.sounds ?? "?"}`;
+    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"} ${stm} ${snd}`;
   }
 
   diagnosticsText(header = "") {
@@ -1781,6 +1928,7 @@ class DiscordBridge {
     const yn = (v) => (v ? "found" : "MISSING");
     const val = (v) => (v === null || v === undefined ? "unreadable" : String(v));
     const s = p.streaming || {};
+    const sb = p.soundboard || {};
     const natives = p.nativeModules && typeof p.nativeModules === "object" ? p.nativeModules : {};
     const nativeNames = Object.keys(natives);
     const nativeSummary = nativeNames.length
@@ -1822,6 +1970,8 @@ class DiscordBridge {
       `games: ${s.games ?? "unreadable"}${s.gameName ? ` (visible: ${s.gameName})` : ""}`,
       `voiceChannel: ${s.voiceChannel || "none"}`,
       `selfStream: ${s.selfStream ? "yes" : "no"} (trackedKey: ${s.trackedKey ? "yes" : "no"})`,
+      `soundboard: store ${yn(sb.store)}, sendFn ${yn(sb.sendFn)}`,
+      `sounds: ${sb.sounds ?? "unreadable"}`,
       `nativeModules: ${nativeSummary}`
     ].filter(Boolean).join("\n");
   }
