@@ -1155,6 +1155,30 @@ describe("soundboard", () => {
     assert.equal(d.isRateLimit(new Error("rate limited")), true);
     assert.equal(d.isRateLimit(new Error("nope")), false);
   });
+  it("treats premium subscription REST failure as success when local audio ran", async () => {
+    const premiumErr = () => { throw new Error("This action requires a premium subscription"); };
+    const { d } = soundBridge({ post: premiumErr });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+  });
+  it("still fails when both legs hit premium or local errors", async () => {
+    const premiumErr = () => { throw new Error("This action requires a premium subscription"); };
+    const { d } = soundBridge({
+      localPlay: () => { throw new Error("local boom"); },
+      post: premiumErr
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Couldn't play Horn/);
+    assert.match(res.message, /premium subscription/);
+  });
+  it("detects premium errors from API body shape", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.isPremiumSubscriptionError(new Error("This action requires a premium subscription")), true);
+    assert.equal(d.isPremiumSubscriptionError({ body: { message: "This action requires a premium subscription" }, status: 403 }), true);
+    assert.equal(d.isPremiumSubscriptionError(new Error("network down")), false);
+  });
   it("reports unconfirmed plays as success", async () => {
     const { d } = soundBridge({ playing: false });
     const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });

@@ -1648,6 +1648,10 @@ class DiscordBridge {
       if (this.isRateLimit(error)) {
         return { ok: false, message: "Slow down — Discord limits sounds to about one per 5 seconds." };
       }
+      if (!localError && this.isPremiumSubscriptionError(error)) {
+        this.info(`soundboard premium broadcast warning ignored, local audio succeeded (${label})`);
+        return { ok: true, message: `Playing ${label}` };
+      }
       const reason = this.soundboardErrorText(error);
       return localError
         ? { ok: false, message: `Couldn't play ${label}: ${reason}` }
@@ -1666,6 +1670,16 @@ class DiscordBridge {
     const status = Number(error?.status ?? error?.code);
     if (status === 429) return true;
     return /rate.?limit|429|too many/i.test(String(error?.message || error || ""));
+  }
+
+  isPremiumSubscriptionError(error) {
+    const text = this.soundboardErrorText(error);
+    if (/premium\s+subscription/i.test(text)) return true;
+    try {
+      const bodyMsg = error?.body?.message;
+      if (typeof bodyMsg === "string" && /premium\s+subscription/i.test(bodyMsg)) return true;
+    } catch { /* ignore */ }
+    return false;
   }
 
   // Best-effort human text for Discord-shaped failures: message, then API
