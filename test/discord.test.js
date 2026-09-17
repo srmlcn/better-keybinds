@@ -1036,3 +1036,281 @@ describe("streaming probe", () => {
     assert.match(d.probeSummary(), /stm:MISS live:n/);
   });
 });
+
+describe("soundboard", () => {
+  function soundBridge({ deafened = false, inVoice = true, localPlay = null, muted = false, playing = true, post = null, restApi = null, sounds = null } = {}) {
+    const calls = [];
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => (inVoice ? "vc1" : null) });
+    d.cache.set("mediaEngine", { isSelfDeaf: () => deafened, isSelfMute: () => muted });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map([["g1", sounds ?? [
+        { available: false, guildId: "g1", name: "Retired", soundId: "s0" },
+        { available: true, emojiId: null, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" },
+        { available: true, emojiId: "e2", emojiName: null, guildId: "g1", name: "Drum", soundId: "s2" }
+      ]]]),
+      getSoundsForGuild: () => null,
+      isPlayingSound: (id) => playing && id === "s1",
+      isUserPlayingSounds: () => false
+    });
+    if (restApi !== false) {
+      d.cache.set("restApi", restApi || {
+        del: async () => {},
+        post: post || (async ({ body, url }) => { calls.push(["post", url, body]); }),
+        put: async () => {}
+      });
+    }
+    if (localPlay !== false) {
+      const inner = localPlay || ((channelId, sound, trigger) => {
+        calls.push(["local", channelId, sound, trigger]);
+      });
+      d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", (channelId, sound, trigger) => inner(channelId, sound, trigger));
+    }
+    return { calls, d };
+  }
+  it("lists available sounds sorted by name", () => {
+    const { d } = soundBridge({});
+    assert.deepEqual(d.listSoundboardSounds(), [
+      { available: true, emojiId: "e2", emojiName: null, guildId: "g1", name: "Drum", soundId: "s2" },
+      { available: true, emojiId: null, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" }
+    ]);
+  });
+  it("plays via local audio plus REST post", async () => {
+    const { calls, d } = soundBridge({});
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn", sourceGuildId: "g1" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+    assert.equal(calls[0][0], "local");
+    assert.equal(calls[0][1], "vc1");
+    assert.equal(calls[0][2].soundId, "s1");
+    assert.equal(calls[0][2].emojiName, "📯");
+    assert.equal(calls[0][3], 1);
+    assert.deepEqual(calls[1], ["post", "/channels/vc1/send-soundboard-sound", {
+      emoji_id: null,
+      emoji_name: "📯",
+      sound_id: "s1",
+      source_guild_id: "g1"
+    }]);
+  });
+  it("prefers explicit emoji params over store values", async () => {
+    const { calls, d } = soundBridge({});
+    await d.playSoundboardSound({ emojiId: "e9", emojiName: "bell", soundId: "s1" });
+    assert.equal(calls[1][2].emoji_id, "e9");
+    assert.equal(calls[1][2].emoji_name, "bell");
+  });
+  it("rejects missing sound, voice, and muted states", async () => {
+    const { d } = soundBridge({});
+    assert.match((await d.playSoundboardSound({})).message, /Pick a sound/);
+    assert.match((await soundBridge({ inVoice: false }).d.playSoundboardSound({ soundId: "s1" })).message, /Join a voice channel/);
+    assert.match((await soundBridge({ muted: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Unmute/);
+    assert.match((await soundBridge({ deafened: true }).d.playSoundboardSound({ soundId: "s1" })).message, /Undeafen/);
+  });
+  it("names the missing play leg", async () => {
+    assert.match((await soundBridge({ restApi: false }).d.playSoundboardSound({ soundId: "s1" })).message, /request module/);
+    assert.match((await soundBridge({ localPlay: false }).d.playSoundboardSound({ soundId: "s1" })).message, /open the soundboard panel once/);
+  });
+  it("fails clearly for stale sounds", async () => {
+    const { d } = soundBridge({});
+    const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Refresh this keybind/);
+  });
+  it("rejects stale ids via getSoundById when the list is empty", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => "vc1" });
+    d.cache.set("mediaEngine", { isSelfDeaf: () => false, isSelfMute: () => false });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map(),
+      getSoundsForGuild: () => [],
+      getSoundById: () => null,
+      isPlayingSound: () => false
+    });
+    d.cache.set("restApi", { del: async () => {}, post: async () => {}, put: async () => {} });
+    d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", (_channelId, _sound, _trigger) => {});
+    const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Refresh this keybind/);
+  });
+  it("does not confirm playback from another active sound", async () => {
+    const { d } = soundBridge({
+      localPlay: () => {},
+      playing: false,
+      post: async () => {}
+    });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map([["g1", [{ available: true, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" }]]]),
+      getSoundsForGuild: () => null,
+      isPlayingSound: (id) => id === "other",
+      isUserPlayingSounds: () => true
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.match(res.message, /couldn't confirm/);
+  });
+  it("reports send failures", async () => {
+    const { d } = soundBridge({ post: async () => { throw new Error("network down"); } });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "Couldn't broadcast Horn: network down");
+  });
+  it("broadcasts despite a local-play throw and logs it", async () => {
+    const logged = [];
+    const { calls, d } = soundBridge({ localPlay: () => { throw new Error("local boom"); } });
+    d.log = { debug: () => {}, info: () => {}, warn: (t, m) => logged.push(m) };
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+    assert.equal(calls[0][0], "post");
+    assert.ok(logged.some((m) => m.includes("local-play") && m.includes("local boom")));
+  });
+  it("reports both legs down", async () => {
+    const { d } = soundBridge({
+      localPlay: () => { throw new Error("local boom"); },
+      post: async () => { throw new Error("network down"); }
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.equal(res.message, "Couldn't play Horn: network down");
+  });
+  it("extracts text from discord-shaped errors", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.soundboardErrorText(new Error("boom")), "boom");
+    assert.equal(d.soundboardErrorText({ body: { message: "Missing Permissions" }, status: 403 }), "Missing Permissions");
+    assert.equal(d.soundboardErrorText({ status: 400 }), "request failed (code 400)");
+    assert.equal(d.soundboardErrorText(null), "unknown error");
+    assert.equal(d.soundboardErrorText({}), "unknown error");
+  });
+  it("maps rate limits to the cooldown message", async () => {
+    const limited = soundBridge({ post: async () => { throw Object.assign(new Error("429"), { status: 429 }); } });
+    assert.match((await limited.d.playSoundboardSound({ soundId: "s1" })).message, /one per 5 seconds/);
+    const d = new DiscordBridge({});
+    assert.equal(d.isRateLimit({ status: 429 }), true);
+    assert.equal(d.isRateLimit(new Error("rate limited")), true);
+    assert.equal(d.isRateLimit(new Error("nope")), false);
+  });
+  it("treats premium subscription REST failure as success when local audio ran", async () => {
+    const premiumErr = () => { throw new Error("This action requires a premium subscription"); };
+    const { d } = soundBridge({ post: premiumErr });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Playing Horn");
+  });
+  it("still fails when both legs hit premium or local errors", async () => {
+    const premiumErr = () => { throw new Error("This action requires a premium subscription"); };
+    const { d } = soundBridge({
+      localPlay: () => { throw new Error("local boom"); },
+      post: premiumErr
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Couldn't play Horn/);
+    assert.match(res.message, /premium subscription/);
+  });
+  it("detects premium errors from API body shape", () => {
+    const d = new DiscordBridge({});
+    assert.equal(d.isPremiumSubscriptionError(new Error("This action requires a premium subscription")), true);
+    assert.equal(d.isPremiumSubscriptionError({ body: { message: "This action requires a premium subscription" }, status: 403 }), true);
+    assert.equal(d.isPremiumSubscriptionError(new Error("network down")), false);
+  });
+  it("reports unconfirmed plays as success", async () => {
+    const { d } = soundBridge({ playing: false });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.match(res.message, /couldn't confirm/);
+  });
+  it("probes soundboard readiness", () => {
+    const { d } = soundBridge({});
+    assert.deepEqual(d.probeSoundboard(), { localPlay: true, localPlayArity: 3, ready: true, restApi: true, sounds: 2, store: true, voiceChannel: "vc1" });
+    assert.match(d.probeSummary(), /sb:ok snd:2/);
+    assert.match(d.diagnosticsText("HEADER"), /soundboard: store found, rest found, localPlay found\(arity 3\)/);
+    assert.match(d.diagnosticsText("HEADER"), /sounds: 2/);
+  });
+  it("degrades without modules", async () => {
+    const d = new DiscordBridge({});
+    assert.deepEqual(d.listSoundboardSounds(), []);
+    assert.equal(d.probeSoundboard().ready, false);
+    assert.match((await d.playSoundboardSound({ soundId: "s1" })).message, /Join a voice channel/);
+    assert.match(d.probeSummary(), /sb:MISS/);
+  });
+});
+
+describe("getSoundboardLocalPlayFn", () => {
+  function handler(action) {
+    return action && action.type === 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
+  }
+  function creator(channelId, sound, trigger) {
+    void channelId;
+    void sound;
+    void trigger;
+    return 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
+  }
+  it("prefers creator-shaped matches over handlers", () => {
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => [{ onEvent: handler }, { play: creator }]
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), creator);
+  });
+  it("takes the fast path without enumeration", () => {
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: (filter) => {
+          const container = { play: creator };
+          try {
+            return filter(container) ? container : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), creator);
+  });
+  it("ignores handler-shaped matches and caches misses", () => {
+    const solo = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: (filter) => {
+          const container = { onEvent: handler };
+          try {
+            return filter(container) ? container : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    });
+    assert.equal(solo.getSoundboardLocalPlayFn(), null);
+    let sweeps = 0;
+    const missing = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => { sweeps += 1; return []; }
+      }
+    });
+    assert.equal(missing.getSoundboardLocalPlayFn(), null);
+    assert.equal(missing.getSoundboardLocalPlayFn(), null);
+    assert.equal(sweeps, 2);
+  });
+  it("retries webpack lookup on forceLookup after a miss throttle", () => {
+    let searches = 0;
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => { searches += 1; return []; }
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), null);
+    assert.equal(searches, 2);
+    assert.equal(d.getSoundboardLocalPlayFn(), null);
+    assert.equal(searches, 2);
+    assert.equal(d.getSoundboardLocalPlayFn({ forceLookup: true }), null);
+    assert.equal(searches, 4);
+  });
+});

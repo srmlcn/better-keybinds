@@ -328,6 +328,14 @@ class DiscordBridge {
     });
   }
 
+  getSoundboardStore() {
+    return this.cached("soundboard", () => (
+      this.getStoreByName("SoundboardStore")
+      || this.findByProps("getSoundsForGuild", "getSoundById")
+      || this.findModule((m) => typeof m?.getSoundsForGuild === "function" && typeof m?.isPlayingSound === "function")
+    ));
+  }
+
   getChannelStore() {
     return this.cached("channelStore", () => (
       this.getStoreByName("ChannelStore")
@@ -702,6 +710,28 @@ class DiscordBridge {
       } catch { /* ignore */ }
     }
     return null;
+  }
+
+  // All functions in a module whose own source contains the needle, for
+  // callers that discriminate matches by arity instead of taking the first.
+  extractCodeFns(mod, needle) {
+    const out = [];
+    const mentions = (fn) => {
+      try {
+        return typeof fn === "function" && fn.toString().includes(needle);
+      } catch {
+        return false;
+      }
+    };
+    if (mentions(mod)) out.push(mod);
+    if (mod && typeof mod === "object") {
+      try {
+        for (const value of Object.values(mod)) {
+          if (mentions(value)) out.push(value);
+        }
+      } catch { /* ignore */ }
+    }
+    return out;
   }
 
   // Find an action creator by a string literal in its source (same idea as
@@ -1430,6 +1460,279 @@ class DiscordBridge {
     return this.getSelfStream() ? this.stopOwnStream() : this.startScreenStream(prefer);
   }
 
+  // ---- soundboard ----
+
+  // Discord's authenticated REST client (Vencord mirrors it as RestAPI via
+  // the same del+put shape). Core module, always loaded — immune to the
+  // soundboard UI chunk being lazy.
+  getRestApi() {
+    return this.cached("restApi", () => this.findModule(
+      (m) => m && typeof m === "object"
+        && typeof m.post === "function"
+        && typeof m.del === "function"
+        && typeof m.put === "function"
+    ));
+  }
+
+  // The action creator behind Discord's own soundboard button press: it is
+  // what actually produces audio. The REST POST alone returns success and
+  // shows the emoji, but nobody hears anything. The creator takes
+  // (channelId, sound, trigger) while Flux handlers take a single action
+  // object, so creator-shaped matches win over handler-shaped ones sharing
+  // a chunk. Misses cache for 60s: the full sweep is slow.
+  getSoundboardLocalPlayFn({ forceLookup = false } = {}) {
+    const needle = 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
+    const key = `code:${needle}`;
+    if (forceLookup) {
+      this.lastAttempt.delete(key);
+      const stale = this.cache.get(key);
+      if (typeof stale === "function" && stale.length < 2) this.cache.delete(key);
+    }
+    if (this.cache.has(key)) {
+      const cached = this.cache.get(key);
+      if (typeof cached === "function" && cached.length >= 2) return cached;
+      if (typeof cached === "function") this.cache.delete(key);
+    }
+    const now = Date.now();
+    if (now - (this.lastAttempt.get(key) || 0) < 60000) return null;
+    this.lastAttempt.set(key, now);
+    const fast = this.extractCodeFn(this.findByStrings(needle), needle);
+    if (fast && fast.length >= 2) {
+      this.cache.set(key, fast);
+      this.debug(`webpack resolved ${key} (arity ${fast.length})`);
+      return fast;
+    }
+    for (const searchExports of [false, true]) {
+      const mods = this.getAllModules(() => true, { searchExports });
+      if (!mods) continue;
+      for (const mod of mods) {
+        for (const fn of this.extractCodeFns(mod, needle)) {
+          if (fn.length >= 2) {
+            this.cache.set(key, fn);
+            this.debug(`webpack resolved ${key} via sweep (arity ${fn.length})`);
+            return fn;
+          }
+        }
+      }
+    }
+    this.debug(`webpack miss ${key} (will retry)`);
+    return null;
+  }
+
+  normalizeSoundboardSound(entry, fallbackGuildId = null) {
+    if (!entry || typeof entry !== "object") return null;
+    const soundId = entry.soundId ?? entry.sound_id ?? entry.id;
+    if (soundId == null || String(soundId) === "") return null;
+    return {
+      available: entry.available !== false,
+      emojiId: entry.emojiId ?? entry.emoji_id ?? null,
+      emojiName: entry.emojiName ?? entry.emoji_name ?? null,
+      guildId: entry.guildId ?? entry.guild_id ?? fallbackGuildId ?? null,
+      name: String(entry.name || "Sound"),
+      soundId: String(soundId)
+    };
+  }
+
+  // Guild sounds plus defaults, deduplicated by sound id. Unavailable
+  // sounds are dropped: firing them would fail at send time anyway.
+  listSoundboardSounds() {
+    const store = this.getSoundboardStore();
+    if (!store) return [];
+    const out = [];
+    const seen = new Set();
+    const push = (entry, guildId = null) => {
+      const sound = this.normalizeSoundboardSound(entry, guildId);
+      if (!sound || !sound.available || seen.has(sound.soundId)) return;
+      seen.add(sound.soundId);
+      out.push(sound);
+    };
+    try {
+      const all = typeof store.getSounds === "function" ? store.getSounds() : null;
+      if (all instanceof Map) {
+        for (const [guildId, sounds] of all) {
+          if (Array.isArray(sounds)) for (const s of sounds) push(s, String(guildId));
+        }
+      } else if (Array.isArray(all)) {
+        for (const s of all) push(s);
+      }
+    } catch { /* per-guild fallback below */ }
+    try {
+      if (typeof store.getSoundsForGuild === "function") {
+        for (const guildId of [this.getVoiceGuildId(), null]) {
+          const list = store.getSoundsForGuild(guildId);
+          if (Array.isArray(list)) for (const s of list) push(s, guildId);
+        }
+      }
+    } catch { /* getSounds result above stands */ }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }
+
+  // ok: sound found; stale: id rejected; unknown: listing empty and no per-id lookup.
+  resolveSoundboardSound(soundId) {
+    const id = String(soundId || "").trim();
+    const listed = this.listSoundboardSounds();
+    const inList = listed.find((s) => s.soundId === id);
+    if (inList) return { known: inList, status: "ok" };
+    try {
+      const store = this.getSoundboardStore();
+      if (store && typeof store.getSoundById === "function") {
+        const sound = this.normalizeSoundboardSound(store.getSoundById(id));
+        if (sound?.available) return { known: sound, status: "ok" };
+        return { known: null, status: "stale" };
+      }
+    } catch { /* listed fallback below */ }
+    if (listed.length > 0) return { known: null, status: "stale" };
+    return { known: null, status: "unknown" };
+  }
+
+  getVoiceGuildId() {
+    try {
+      const channelId = this.getVoiceChannelId();
+      if (!channelId) return null;
+      return this.channelGuildId(this.getChannel(channelId));
+    } catch {
+      return null;
+    }
+  }
+
+  isSoundboardPlaying(soundId) {
+    try {
+      const store = this.getSoundboardStore();
+      if (!store) return null;
+      if (typeof store.isPlayingSound === "function" && store.isPlayingSound(soundId)) return true;
+      if (typeof store.isPlayingSound === "function") return false;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Playing a sound is two calls, mirroring Discord's own button: the
+  // local-play action (audible audio) plus the REST POST (server
+  // broadcast). The emoji fields are required in practice — without them
+  // the POST succeeds but nothing plays.
+  async playSoundboardSound({ emojiId = null, emojiName = null, soundId = null, soundName = null, sourceGuildId = null } = {}) {
+    const id = String(soundId || "").trim();
+    if (!id) return { ok: false, message: "Pick a sound for this keybind first." };
+    const label = String(soundName || "").trim() || "sound";
+    const channelId = this.getVoiceChannelId();
+    if (!channelId) return { ok: false, message: "Join a voice channel first, then try again." };
+    if (this.isSelfMute() === true) return { ok: false, message: "Unmute yourself first — muted users can't play sounds." };
+    if (this.isSelfDeaf() === true) return { ok: false, message: "Undeafen yourself first — deafened users can't play sounds." };
+    const resolved = this.resolveSoundboardSound(id);
+    if (resolved.status === "stale") {
+      return { ok: false, message: `Couldn't find ${label} — Refresh this keybind and pick it again.` };
+    }
+    const known = resolved.status === "ok" ? resolved.known : null;
+    const rest = this.getRestApi();
+    if (!rest || typeof rest.post !== "function") {
+      return { ok: false, message: "Couldn't reach Discord's request module — Discord may have updated." };
+    }
+    let localPlay = this.getSoundboardLocalPlayFn();
+    if (typeof localPlay !== "function") {
+      localPlay = this.getSoundboardLocalPlayFn({ forceLookup: true });
+    }
+    if (typeof localPlay !== "function") {
+      return { ok: false, message: "Couldn't reach Discord's soundboard audio — open the soundboard panel once, then retry." };
+    }
+    const guildId = String(sourceGuildId || "").trim() || known?.guildId || null;
+    const sound = {
+      available: true,
+      emojiId: emojiId ?? known?.emojiId ?? null,
+      emojiName: emojiName ?? known?.emojiName ?? null,
+      guildId: guildId || "",
+      name: label,
+      soundId: id,
+      volume: 1
+    };
+    let localError = null;
+    try {
+      localPlay(channelId, sound, 1);
+    } catch (error) {
+      // Non-fatal: the broadcast below is what the channel hears. Logged
+      // with full detail so a genuine local failure stays diagnosable.
+      localError = error;
+      this.logSoundboardError("local-play", error);
+    }
+    try {
+      const res = rest.post({
+        body: {
+          emoji_id: sound.emojiId,
+          emoji_name: sound.emojiName,
+          sound_id: id,
+          ...(guildId ? { source_guild_id: guildId } : {})
+        },
+        url: `/channels/${channelId}/send-soundboard-sound`
+      });
+      if (res && typeof res.then === "function") await res;
+    } catch (error) {
+      this.logSoundboardError("rest-post", error);
+      if (this.isRateLimit(error)) {
+        return { ok: false, message: "Slow down — Discord limits sounds to about one per 5 seconds." };
+      }
+      if (!localError && this.isPremiumSubscriptionError(error)) {
+        this.info(`soundboard premium broadcast warning ignored, local audio succeeded (${label})`);
+        return { ok: true, message: `Playing ${label}` };
+      }
+      const reason = this.soundboardErrorText(error);
+      return localError
+        ? { ok: false, message: `Couldn't play ${label}: ${reason}` }
+        : { ok: false, message: `Couldn't broadcast ${label}: ${reason}` };
+    }
+    // Sounds are short; a fast clip can finish before the first poll, so a
+    // missed confirmation still reports success like volume writes do.
+    const confirmed = await this.waitFor(() => this.isSoundboardPlaying(id), { intervalMs: 250, timeoutMs: 2500 });
+    this.info(`soundboard played ${label} (${id}) in ${channelId}${confirmed ? "" : " (unconfirmed)"}`);
+    return confirmed
+      ? { ok: true, message: `Playing ${label}` }
+      : { ok: true, message: `Played ${label} (couldn't confirm)` };
+  }
+
+  isRateLimit(error) {
+    const status = Number(error?.status ?? error?.code);
+    if (status === 429) return true;
+    return /rate.?limit|429|too many/i.test(String(error?.message || error || ""));
+  }
+
+  isPremiumSubscriptionError(error) {
+    const text = this.soundboardErrorText(error);
+    if (/premium\s+subscription/i.test(text)) return true;
+    try {
+      const bodyMsg = error?.body?.message;
+      if (typeof bodyMsg === "string" && /premium\s+subscription/i.test(bodyMsg)) return true;
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  // Best-effort human text for Discord-shaped failures: message, then API
+  // body message, then status code. Never empty, never [object Object].
+  soundboardErrorText(error) {
+    const msg = String(error?.message || "").trim();
+    if (msg && msg !== "[object Object]") return msg;
+    try {
+      const body = error?.body;
+      if (body && typeof body === "object") {
+        if (typeof body.message === "string" && body.message.trim()) return body.message.trim();
+        const str = JSON.stringify(body).slice(0, 160);
+        if (str && str !== "{}") return str;
+      }
+    } catch { /* status fallback below */ }
+    const status = error?.status ?? error?.code;
+    if (status !== null && status !== undefined && String(status).trim() !== "") return `request failed (code ${status})`;
+    if (error === null || error === undefined) return "unknown error";
+    const str = String(error).trim();
+    return str && str !== "[object Object]" ? str.slice(0, 160) : "unknown error";
+  }
+
+  logSoundboardError(leg, error) {
+    let detail = "";
+    try {
+      detail = ` status=${error?.status ?? error?.code ?? "?"} body=${JSON.stringify(error?.body)?.slice(0, 200) ?? "?"}`;
+    } catch { /* message below stands */ }
+    this.warn(`soundboard ${leg} failed: ${this.soundboardErrorText(error)}${detail}`);
+  }
+
   // Probe native helper modules for capture/voice APIs (keys only, cached).
   inspectNativeModules() {
     if (this.nativeCache) return this.nativeCache;
@@ -1717,6 +2020,30 @@ class DiscordBridge {
     };
   }
 
+  // Snapshot of soundboard dependencies: store, REST client, local-play
+  // action, readable sound count, and voice presence.
+  probeSoundboard() {
+    const store = Boolean(this.getSoundboardStore());
+    const restApi = Boolean(this.getRestApi());
+    const localPlayFn = this.getSoundboardLocalPlayFn();
+    const localPlay = typeof localPlayFn === "function";
+    let sounds = null;
+    try {
+      sounds = store ? this.listSoundboardSounds().length : null;
+    } catch {
+      sounds = null;
+    }
+    return {
+      localPlay,
+      localPlayArity: localPlay ? localPlayFn.length : null,
+      ready: store && restApi && localPlay,
+      restApi,
+      sounds,
+      store,
+      voiceChannel: this.getVoiceChannelId()
+    };
+  }
+
   // Snapshot of every Discord dependency for the diagnostics panel.
   probe() {
     const media = this.getMediaEngineStore();
@@ -1746,6 +2073,7 @@ class DiscordBridge {
       selectedChannel: Boolean(this.getSelectedChannelStore()),
       selfDeaf: this.isSelfDeaf(),
       selfMute: this.isSelfMute(),
+      soundboard: this.probeSoundboard(),
       streaming: this.probeStreaming(),
       voiceActions: Boolean(this.getVoiceActions())
     };
@@ -1773,7 +2101,9 @@ class DiscordBridge {
       : ap.hasOutputVolumeSubscriber === false ? "NO" : "?";
     const s = p.streaming || {};
     const stm = `stm:${s.ready ? "ok" : "MISS"} live:${s.selfStream ? "Y" : "n"} g:${s.games ?? "?"}`;
-    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"} ${stm}`;
+    const sb = p.soundboard || {};
+    const snd = `sb:${sb.ready ? "ok" : "MISS"} snd:${sb.sounds ?? "?"}`;
+    return `${mods} vset:${vset} ovolh:${oh} ovols:${osub} out:${p.outputVolume ?? "?"} in:${p.inputVolume ?? "?"} ${stm} ${snd}`;
   }
 
   diagnosticsText(header = "") {
@@ -1781,6 +2111,7 @@ class DiscordBridge {
     const yn = (v) => (v ? "found" : "MISSING");
     const val = (v) => (v === null || v === undefined ? "unreadable" : String(v));
     const s = p.streaming || {};
+    const sb = p.soundboard || {};
     const natives = p.nativeModules && typeof p.nativeModules === "object" ? p.nativeModules : {};
     const nativeNames = Object.keys(natives);
     const nativeSummary = nativeNames.length
@@ -1822,6 +2153,8 @@ class DiscordBridge {
       `games: ${s.games ?? "unreadable"}${s.gameName ? ` (visible: ${s.gameName})` : ""}`,
       `voiceChannel: ${s.voiceChannel || "none"}`,
       `selfStream: ${s.selfStream ? "yes" : "no"} (trackedKey: ${s.trackedKey ? "yes" : "no"})`,
+      `soundboard: store ${yn(sb.store)}, rest ${yn(sb.restApi)}, localPlay ${sb.localPlay ? `found(arity ${sb.localPlayArity ?? "?"})` : "MISSING"}`,
+      `sounds: ${sb.sounds ?? "unreadable"}`,
       `nativeModules: ${nativeSummary}`
     ].filter(Boolean).join("\n");
   }
