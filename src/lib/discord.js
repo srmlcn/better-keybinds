@@ -1480,10 +1480,19 @@ class DiscordBridge {
   // (channelId, sound, trigger) while Flux handlers take a single action
   // object, so creator-shaped matches win over handler-shaped ones sharing
   // a chunk. Misses cache for 60s: the full sweep is slow.
-  getSoundboardLocalPlayFn() {
+  getSoundboardLocalPlayFn({ forceLookup = false } = {}) {
     const needle = 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
     const key = `code:${needle}`;
-    if (this.cache.has(key)) return this.cache.get(key);
+    if (forceLookup) {
+      this.lastAttempt.delete(key);
+      const stale = this.cache.get(key);
+      if (typeof stale === "function" && stale.length < 2) this.cache.delete(key);
+    }
+    if (this.cache.has(key)) {
+      const cached = this.cache.get(key);
+      if (typeof cached === "function" && cached.length >= 2) return cached;
+      if (typeof cached === "function") this.cache.delete(key);
+    }
     const now = Date.now();
     if (now - (this.lastAttempt.get(key) || 0) < 60000) return null;
     this.lastAttempt.set(key, now);
@@ -1506,13 +1515,8 @@ class DiscordBridge {
         }
       }
     }
-    if (fast) {
-      this.cache.set(key, fast);
-      this.debug(`webpack resolved ${key} (fallback arity ${fast.length})`);
-    } else {
-      this.debug(`webpack miss ${key} (will retry)`);
-    }
-    return fast;
+    this.debug(`webpack miss ${key} (will retry)`);
+    return null;
   }
 
   normalizeSoundboardSound(entry, fallbackGuildId = null) {
@@ -1564,6 +1568,24 @@ class DiscordBridge {
     return out;
   }
 
+  // ok: sound found; stale: id rejected; unknown: listing empty and no per-id lookup.
+  resolveSoundboardSound(soundId) {
+    const id = String(soundId || "").trim();
+    const listed = this.listSoundboardSounds();
+    const inList = listed.find((s) => s.soundId === id);
+    if (inList) return { known: inList, status: "ok" };
+    try {
+      const store = this.getSoundboardStore();
+      if (store && typeof store.getSoundById === "function") {
+        const sound = this.normalizeSoundboardSound(store.getSoundById(id));
+        if (sound?.available) return { known: sound, status: "ok" };
+        return { known: null, status: "stale" };
+      }
+    } catch { /* listed fallback below */ }
+    if (listed.length > 0) return { known: null, status: "stale" };
+    return { known: null, status: "unknown" };
+  }
+
   getVoiceGuildId() {
     try {
       const channelId = this.getVoiceChannelId();
@@ -1579,9 +1601,7 @@ class DiscordBridge {
       const store = this.getSoundboardStore();
       if (!store) return null;
       if (typeof store.isPlayingSound === "function" && store.isPlayingSound(soundId)) return true;
-      const me = this.getUserStore()?.getCurrentUser?.()?.id;
-      if (me && typeof store.isUserPlayingSounds === "function" && store.isUserPlayingSounds(me)) return true;
-      if (typeof store.isPlayingSound === "function" || typeof store.isUserPlayingSounds === "function") return false;
+      if (typeof store.isPlayingSound === "function") return false;
       return null;
     } catch {
       return null;
@@ -1600,16 +1620,19 @@ class DiscordBridge {
     if (!channelId) return { ok: false, message: "Join a voice channel first, then try again." };
     if (this.isSelfMute() === true) return { ok: false, message: "Unmute yourself first — muted users can't play sounds." };
     if (this.isSelfDeaf() === true) return { ok: false, message: "Undeafen yourself first — deafened users can't play sounds." };
-    const sounds = this.listSoundboardSounds();
-    const known = sounds.find((s) => s.soundId === id);
-    if (sounds.length && !known) {
+    const resolved = this.resolveSoundboardSound(id);
+    if (resolved.status === "stale") {
       return { ok: false, message: `Couldn't find ${label} — Refresh this keybind and pick it again.` };
     }
+    const known = resolved.status === "ok" ? resolved.known : null;
     const rest = this.getRestApi();
     if (!rest || typeof rest.post !== "function") {
       return { ok: false, message: "Couldn't reach Discord's request module — Discord may have updated." };
     }
-    const localPlay = this.getSoundboardLocalPlayFn();
+    let localPlay = this.getSoundboardLocalPlayFn();
+    if (typeof localPlay !== "function") {
+      localPlay = this.getSoundboardLocalPlayFn({ forceLookup: true });
+    }
     if (typeof localPlay !== "function") {
       return { ok: false, message: "Couldn't reach Discord's soundboard audio — open the soundboard panel once, then retry." };
     }

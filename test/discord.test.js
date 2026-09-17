@@ -1061,9 +1061,10 @@ describe("soundboard", () => {
       });
     }
     if (localPlay !== false) {
-      d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", localPlay || ((channelId, sound, trigger) => {
+      const inner = localPlay || ((channelId, sound, trigger) => {
         calls.push(["local", channelId, sound, trigger]);
-      }));
+      });
+      d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", (channelId, sound, trigger) => inner(channelId, sound, trigger));
     }
     return { calls, d };
   }
@@ -1113,6 +1114,38 @@ describe("soundboard", () => {
     const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
     assert.equal(res.ok, false);
     assert.match(res.message, /Refresh this keybind/);
+  });
+  it("rejects stale ids via getSoundById when the list is empty", async () => {
+    const d = new DiscordBridge({});
+    d.cache.set("selectedChannel", { getVoiceChannelId: () => "vc1" });
+    d.cache.set("mediaEngine", { isSelfDeaf: () => false, isSelfMute: () => false });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map(),
+      getSoundsForGuild: () => [],
+      getSoundById: () => null,
+      isPlayingSound: () => false
+    });
+    d.cache.set("restApi", { del: async () => {}, post: async () => {}, put: async () => {} });
+    d.cache.set("code:type:\"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY\"", (_channelId, _sound, _trigger) => {});
+    const res = await d.playSoundboardSound({ soundId: "sx", soundName: "Gone" });
+    assert.equal(res.ok, false);
+    assert.match(res.message, /Refresh this keybind/);
+  });
+  it("does not confirm playback from another active sound", async () => {
+    const { d } = soundBridge({
+      localPlay: () => {},
+      playing: false,
+      post: async () => {}
+    });
+    d.cache.set("soundboard", {
+      getSounds: () => new Map([["g1", [{ available: true, emojiName: "📯", guildId: "g1", name: "Horn", soundId: "s1" }]]]),
+      getSoundsForGuild: () => null,
+      isPlayingSound: (id) => id === "other",
+      isUserPlayingSounds: () => true
+    });
+    const res = await d.playSoundboardSound({ soundId: "s1", soundName: "Horn" });
+    assert.equal(res.ok, true);
+    assert.match(res.message, /couldn't confirm/);
   });
   it("reports send failures", async () => {
     const { d } = soundBridge({ post: async () => { throw new Error("network down"); } });
@@ -1237,7 +1270,7 @@ describe("getSoundboardLocalPlayFn", () => {
     });
     assert.equal(d.getSoundboardLocalPlayFn(), creator);
   });
-  it("falls back to handler-shaped matches and caches misses", () => {
+  it("ignores handler-shaped matches and caches misses", () => {
     const solo = new DiscordBridge({
       Webpack: {
         Filters: {},
@@ -1251,7 +1284,7 @@ describe("getSoundboardLocalPlayFn", () => {
         }
       }
     });
-    assert.equal(solo.getSoundboardLocalPlayFn(), handler);
+    assert.equal(solo.getSoundboardLocalPlayFn(), null);
     let sweeps = 0;
     const missing = new DiscordBridge({
       Webpack: {
@@ -1263,5 +1296,21 @@ describe("getSoundboardLocalPlayFn", () => {
     assert.equal(missing.getSoundboardLocalPlayFn(), null);
     assert.equal(missing.getSoundboardLocalPlayFn(), null);
     assert.equal(sweeps, 2);
+  });
+  it("retries webpack lookup on forceLookup after a miss throttle", () => {
+    let searches = 0;
+    const d = new DiscordBridge({
+      Webpack: {
+        Filters: {},
+        getModule: () => null,
+        getModules: () => { searches += 1; return []; }
+      }
+    });
+    assert.equal(d.getSoundboardLocalPlayFn(), null);
+    assert.equal(searches, 2);
+    assert.equal(d.getSoundboardLocalPlayFn(), null);
+    assert.equal(searches, 2);
+    assert.equal(d.getSoundboardLocalPlayFn({ forceLookup: true }), null);
+    assert.equal(searches, 4);
   });
 });
