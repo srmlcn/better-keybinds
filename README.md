@@ -85,7 +85,7 @@ The Soundboard action plays a saved sound in your current voice channel. Require
 
 Pick the sound on the keybind row with **Refresh**; the picker lists your guild and default sounds. Every play is verified against Discord's playback state before the toast reports success. Sounds are short, so a fast clip can finish before confirmation — those report `Played X (couldn't confirm)` and still played.
 
-Discord limits sounds to about one per 5 seconds; faster presses report the cooldown instead of failing silently. If a bind reports it can't reach the soundboard audio, open Discord's soundboard panel once (loads the module), then retry.
+Discord limits sounds to about one per 5 seconds; faster presses report the cooldown instead of failing silently. Playback broadcasts to the call mix, so everyone in the channel hears it.
 
 Saved sounds are matched by sound ID only. If a sound was deleted, the bind fails clearly instead of playing the wrong clip — hit **Refresh** and pick it again.
 
