@@ -625,11 +625,61 @@ describe("source matching", () => {
     const sources = [{ id: "window:4242:0", name: "Unrelated", sourcePid: 99 }];
     assert.equal(d.matchGameSource(sources, { name: "Doom", pid: 4242 }), null);
   });
-  it("never guesses by title — pid only, no random window", () => {
+  it("matches exact titles as last resort, never substrings", () => {
     const sources = [{ id: "window:2:0", name: "DOOM Eternal", sourcePid: null }];
-    assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else", pid: 4242 }), null);
-    assert.equal(d.matchGameSource(sources, { name: "DOOM Eternal", pid: null }), null);
+    assert.equal(d.matchGameSource(sources, { exePath: "C:\\Games\\doom\\DOOM Eternal.exe", name: "Something Else", pid: 4242 }).id, "window:2:0");
+    assert.equal(d.matchGameSource(sources, { name: "DOOM Eternal", pid: null }).id, "window:2:0");
+    assert.equal(d.matchGameSource([{ id: "window:3:0", name: "DOOM Eternal - Horde Mode" }], { name: "Doom", pid: 7 }), null);
+    assert.equal(d.matchGameSource([{ id: "window:4:0", name: "Google Chrome" }], { exePath: "C:\\go.exe", name: "Go", pid: 8 }), null);
     assert.equal(d.matchGameSource([], { name: "Doom", pid: 1 }), null);
+  });
+  it("correlates windows via Discord's observed-app map", () => {
+    const bridge = new DiscordBridge({});
+    bridge.cache.set("runningGame", {
+      getObservedAppNameForWindow: (hwnd) => (hwnd === 9876 ? "EscapeFromTarkov.exe" : null),
+      getRunningGames: () => [],
+      getVisibleGame: () => null
+    });
+    const sources = [
+      { id: "window:1111:0", name: "Discord" },
+      { id: "window:9876:0", name: "EscapeFromTarkov" }
+    ];
+    const game = { exePath: "C:\\Games\\EscapeFromTarkov.exe", name: "Escape from Tarkov", pid: 4242 };
+    assert.equal(bridge.matchGameSource(sources, game).id, "window:9876:0");
+    assert.equal(bridge.windowHandleOf({ id: "window:9876:0" }), 9876);
+    assert.equal(bridge.windowHandleOf({ id: "screen:0:0" }), null);
+    assert.equal(bridge.observedAppName(9876), "EscapeFromTarkov.exe");
+    assert.equal(bridge.observedAppName(1111), null);
+  });
+  it("observed-app matching tolerates missing APIs", () => {
+    assert.equal(d.observedAppName(1234), null);
+    assert.equal(d.matchGameSource([{ id: "window:2:0", name: "DOOM" }], { name: "Doom", pid: 4242 }).id, "window:2:0");
+  });
+  it("tries numeric handle then raw source id for observed lookup", () => {
+    const bridge = new DiscordBridge({});
+    const seen = [];
+    bridge.cache.set("runningGame", {
+      getObservedAppNameForWindow: (arg) => {
+        seen.push(arg);
+        if (typeof arg === "number") throw new Error("want string");
+        return arg === "window:555:0" ? "Rocket League" : null;
+      },
+      getRunningGames: () => [],
+      getVisibleGame: () => null
+    });
+    const game = { exePath: "C:\\Games\\RocketLeague.exe", name: "Rocket League", pid: 4242 };
+    assert.equal(bridge.matchGameSource([{ id: "window:555:0", name: "Rocket League" }], game).id, "window:555:0");
+    assert.deepEqual(seen, [555, "window:555:0"]);
+  });
+  it("matches observed full paths by basename", () => {
+    const bridge = new DiscordBridge({});
+    bridge.cache.set("runningGame", {
+      getObservedAppNameForWindow: () => "C:\\Games\\RocketLeague.exe",
+      getRunningGames: () => [],
+      getVisibleGame: () => null
+    });
+    const game = { exePath: "C:\\Games\\RocketLeague.exe", name: "Rocket League", pid: 4242 };
+    assert.equal(bridge.matchGameSource([{ id: "window:555:0", name: "RL" }], game).id, "window:555:0");
   });
   it("prefers application sources over windows for the same pid", () => {
     const sources = [
@@ -817,6 +867,28 @@ describe("stream actions", () => {
     const res = await d.startGameStream();
     assert.equal(res.ok, true);
     assert.match(res.message, /Already streaming/);
+  });
+  it("streams the game window when sources carry no pid (Electron shape)", async () => {
+    const { calls, d } = streamBridge({
+      games: [{ exePath: "C:\\Games\\EscapeFromTarkov.exe", lastFocused: 5, name: "Escape from Tarkov", pid: 4242 }],
+      sources: [
+        { id: "window:1111:0", name: "Discord" },
+        { id: "window:9876:0", name: "EscapeFromTarkov" },
+        { id: "screen:0:0", name: "Screen 1" }
+      ]
+    });
+    d.cache.set("runningGame", {
+      getObservedAppNameForWindow: (hwnd) => (hwnd === 9876 ? "EscapeFromTarkov.exe" : null),
+      getRunningGames: () => [{ exePath: "C:\\Games\\EscapeFromTarkov.exe", lastFocused: 5, name: "Escape from Tarkov", pid: 4242 }],
+      getVisibleGame: () => null,
+      isDetectionEnabled: () => true
+    });
+    const res = await d.startGameStream();
+    assert.equal(res.ok, true);
+    assert.equal(res.message, "Streaming Escape from Tarkov");
+    assert.equal(calls[0][2].sourceId, "window:9876:0");
+    assert.equal(calls[0][2].pid, 4242);
+    assert.equal(calls[0][2].sourceName, "Escape from Tarkov");
   });
   it("requires voice, games, and matching sources", async () => {
     assert.match((await streamBridge({ inVoice: false }).d.startGameStream()).message, /Join a voice channel/);

@@ -1012,23 +1012,136 @@ class DiscordBridge {
     return null;
   }
 
-  // Match a detected game to its capture sources by process ID only.
-  // Discord's Go Live resolves game name/icon from the pid, so a fuzzy
-  // title match that lands on another app's window streams the wrong
-  // window while still reporting the game name. Never guess: when no
-  // source carries the game pid, return null and let the caller fall
-  // back to an explicitly labeled screen share or fail clearly.
+  // Native window handle from an enumerated source id (window:<hwnd>:…).
+  // Electron/Chrome ids carry the HWND, never the pid.
+  windowHandleOf(source) {
+    const match = /^window:(\d+)/i.exec(String(source?.id || ""));
+    if (!match) return null;
+    const hwnd = Number(match[1]);
+    return Number.isFinite(hwnd) && hwnd > 0 ? hwnd : null;
+  }
+
+  // Discord's own native window→app map (process observer). Returns the
+  // observed application name for a window handle, or null. Guarded:
+  // unknown handles and older clients return null instead of throwing.
+  observedAppName(hwnd) {
+    try {
+      const store = this.getRunningGameStore();
+      if (typeof store?.getObservedAppNameForWindow !== "function") return null;
+      const name = store.getObservedAppNameForWindow(hwnd);
+      return typeof name === "string" && name.trim() ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Observed-app lookup for an enumerated source. Discord's own callers
+  // pass the raw source id string while the type declaration says numeric
+  // handle — try the parsed handle first, then the raw id, first hit wins.
+  observedAppNameForSource(source) {
+    let fn = null;
+    try {
+      const store = this.getRunningGameStore();
+      if (typeof store?.getObservedAppNameForWindow === "function") {
+        fn = store.getObservedAppNameForWindow.bind(store);
+      }
+    } catch {
+      return null;
+    }
+    if (!fn) return null;
+    const id = String(source?.id || "");
+    const hwnd = this.windowHandleOf(source);
+    const attempts = hwnd ? [hwnd, id] : [id];
+    for (const arg of attempts) {
+      if (arg === "" || arg == null) continue;
+      try {
+        const name = fn(arg);
+        if (typeof name === "string" && name.trim()) return name;
+      } catch { /* try next form */ }
+    }
+    return null;
+  }
+
+  // Identity strings for a detected game: executable basename and display
+  // name, each raw-lowercased and tight (alphanumeric-only). Compared with
+  // exact equality only — never substring.
+  gameIdentities(game) {
+    const out = new Set();
+    const add = (s) => {
+      const raw = String(s || "").trim().toLowerCase();
+      if (raw) out.add(raw);
+      const tight = raw.replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, "");
+      if (tight) out.add(tight);
+    };
+    add(String(game?.exePath || "").split(/[\\/]/).pop());
+    add(game?.name);
+    return out;
+  }
+
+  identityMatches(identities, candidate) {
+    if (!identities?.size) return false;
+    const raw = String(candidate || "").trim().toLowerCase();
+    if (!raw) return false;
+    if (identities.has(raw)) return true;
+    // Observed names may arrive as a full path; compare its basename too.
+    const base = raw.split(/[\\/]/).pop();
+    if (base && identities.has(base)) return true;
+    const tight = (s) => s.replace(/\.exe$/i, "").replace(/[^a-z0-9]+/g, "");
+    return Boolean(tight(raw) && identities.has(tight(raw)))
+      || Boolean(base && tight(base) && identities.has(tight(base)));
+  }
+
+  // Match a detected game to its capture sources. Enumerated desktop
+  // sources carry no pid (Electron desktopCapturer shape: id/name only),
+  // so pid comparison alone never fires and every game silently became a
+  // screen share titled "Screen 1". Correlate like Discord's Go Live:
+  //   1. sourcePid exact match (application sources that carry one).
+  //   2. HWND → RunningGameStore.getObservedAppNameForWindow, exact
+  //      identity match against the game's exe/name (native mapping).
+  //   3. Exact window-title match against exe/name (last resort, when the
+  //      observed-app API is unavailable). Substring guessing is still
+  //      refused: a near miss returns null and the caller falls back to
+  //      an explicitly labeled screen share or fails clearly.
   // Prefers Discord's application source (game identity) over the raw
-  // window source when the enumerator returns both for the same pid.
+  // window source when both resolve for the same game.
   matchGameSources(sources, game) {
     if (!Array.isArray(sources) || !game) return { application: null, window: null };
     const pid = Number(game.pid);
-    if (!Number.isFinite(pid) || pid <= 0) return { application: null, window: null };
-    const matches = sources.filter((s) => this.sourceProcessId(s) === pid
-      && this.classifySource(s) !== "screen");
-    const application = matches.find((s) => this.isApplicationSource(s)) || null;
-    const window = matches.find((s) => !this.isApplicationSource(s)) || null;
-    return { application, window };
+    const candidates = sources.filter((s) => s?.id && this.classifySource(s) !== "screen");
+    const split = (list) => ({
+      application: list.find((s) => this.isApplicationSource(s)) || null,
+      window: list.find((s) => !this.isApplicationSource(s)) || null
+    });
+    if (Number.isFinite(pid) && pid > 0) {
+      const byPid = candidates.filter((s) => this.sourceProcessId(s) === pid);
+      if (byPid.length) return split(byPid);
+    }
+    const identities = this.gameIdentities(game);
+    let observedApi = false;
+    try {
+      observedApi = typeof this.getRunningGameStore()?.getObservedAppNameForWindow === "function";
+    } catch {
+      observedApi = false;
+    }
+    const byObserved = [];
+    for (const source of candidates) {
+      const observed = observedApi ? this.observedAppNameForSource(source) : null;
+      const hwnd = this.windowHandleOf(source);
+      this.debug(`game match ${source.id} "${source.name || ""}" hwnd ${hwnd || "?"} observed "${observed || "?"}"`);
+      if (observed && this.identityMatches(identities, observed)) byObserved.push(source);
+    }
+    if (byObserved.length) {
+      this.debug(`game match via observed app: ${byObserved.map((s) => s.id).join(",")}`);
+      return split(byObserved);
+    }
+    const byTitle = candidates.filter((s) => this.identityMatches(identities, s?.name));
+    if (byTitle.length) {
+      this.debug(`game match via exact title: ${byTitle.map((s) => s.id).join(",")}`);
+      return split(byTitle);
+    }
+    this.debug(`game match miss for "${game?.name || ""}" pid ${Number.isFinite(pid) ? pid : "?"} `
+      + `(${candidates.length} window candidates, observedApi ${observedApi ? "yes" : "no"})`);
+    return { application: null, window: null };
   }
 
   matchGameSource(sources, game) {
