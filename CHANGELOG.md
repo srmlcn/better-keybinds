@@ -1,3 +1,9 @@
+## [2.8.1](https://github.com/srmlcn/better-keybinds/compare/v2.8.0...v2.8.1) (2026-09-18)
+
+### Bug Fixes
+
+* **soundboard:** route playback via rest broadcast ([fc0c55c](https://github.com/srmlcn/better-keybinds/commit/fc0c55c778e9ea4d13bc47cc8a9af6067a6313d8))
+
 ## [2.8.0](https://github.com/srmlcn/better-keybinds/compare/v2.7.3...v2.8.0) (2026-09-17)
 
 ### Features
