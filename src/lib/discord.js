@@ -1474,12 +1474,14 @@ class DiscordBridge {
     ));
   }
 
-  // The action creator behind Discord's own soundboard button press: it is
-  // what actually produces audio. The REST POST alone returns success and
-  // shows the emoji, but nobody hears anything. The creator takes
-  // (channelId, sound, trigger) while Flux handlers take a single action
-  // object, so creator-shaped matches win over handler-shaped ones sharing
-  // a chunk. Misses cache for 60s: the full sweep is slow.
+  // Local-only preview action (GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY). Never
+  // used for playback: it routes to local output only, so the sender hears
+  // it while the call does not, and it sticks the sender's speaking
+  // indicator on. Broadcast is REST-only (see playSoundboardSound). Kept
+  // for diagnostics; the creator takes (channelId, sound, trigger) while
+  // Flux handlers take a single action object, so creator-shaped matches
+  // win over handler-shaped ones sharing a chunk. Misses cache for 60s:
+  // the full sweep is slow.
   getSoundboardLocalPlayFn({ forceLookup = false } = {}) {
     const needle = 'type:"GUILD_SOUNDBOARD_SOUND_PLAY_LOCALLY"';
     const key = `code:${needle}`;
@@ -1608,11 +1610,12 @@ class DiscordBridge {
     }
   }
 
-  // Playing a sound is two calls, mirroring Discord's own button: the
-  // local-play action (audible audio) plus the REST POST (server
-  // broadcast). The emoji fields are required in practice — without them
-  // the POST succeeds but nothing plays.
-  async playSoundboardSound({ emojiId = null, emojiName = null, soundId = null, soundName = null, sourceGuildId = null } = {}) {
+  // Broadcast a sound to the call mix via REST. The server fans out a
+  // VOICE_CHANNEL_EFFECT_SEND event, so every participant (including the
+  // sender) plays and renders the indicator; no local-play call is needed
+  // or wanted. Body matches the public API: sound_id plus
+  // source_guild_id for cross-server sounds only.
+  async playSoundboardSound({ soundId = null, soundName = null, sourceGuildId = null } = {}) {
     const id = String(soundId || "").trim();
     if (!id) return { ok: false, message: "Pick a sound for this keybind first." };
     const label = String(soundName || "").trim() || "sound";
@@ -1629,37 +1632,10 @@ class DiscordBridge {
     if (!rest || typeof rest.post !== "function") {
       return { ok: false, message: "Couldn't reach Discord's request module — Discord may have updated." };
     }
-    let localPlay = this.getSoundboardLocalPlayFn();
-    if (typeof localPlay !== "function") {
-      localPlay = this.getSoundboardLocalPlayFn({ forceLookup: true });
-    }
-    if (typeof localPlay !== "function") {
-      return { ok: false, message: "Couldn't reach Discord's soundboard audio — open the soundboard panel once, then retry." };
-    }
     const guildId = String(sourceGuildId || "").trim() || known?.guildId || null;
-    const sound = {
-      available: true,
-      emojiId: emojiId ?? known?.emojiId ?? null,
-      emojiName: emojiName ?? known?.emojiName ?? null,
-      guildId: guildId || "",
-      name: label,
-      soundId: id,
-      volume: 1
-    };
-    let localError = null;
-    try {
-      localPlay(channelId, sound, 1);
-    } catch (error) {
-      // Non-fatal: the broadcast below is what the channel hears. Logged
-      // with full detail so a genuine local failure stays diagnosable.
-      localError = error;
-      this.logSoundboardError("local-play", error);
-    }
     try {
       const res = rest.post({
         body: {
-          emoji_id: sound.emojiId,
-          emoji_name: sound.emojiName,
           sound_id: id,
           ...(guildId ? { source_guild_id: guildId } : {})
         },
@@ -1671,14 +1647,8 @@ class DiscordBridge {
       if (this.isRateLimit(error)) {
         return { ok: false, message: "Slow down — Discord limits sounds to about one per 5 seconds." };
       }
-      if (!localError && this.isPremiumSubscriptionError(error)) {
-        this.info(`soundboard premium broadcast warning ignored, local audio succeeded (${label})`);
-        return { ok: true, message: `Playing ${label}` };
-      }
       const reason = this.soundboardErrorText(error);
-      return localError
-        ? { ok: false, message: `Couldn't play ${label}: ${reason}` }
-        : { ok: false, message: `Couldn't broadcast ${label}: ${reason}` };
+      return { ok: false, message: `Couldn't play ${label}: ${reason}` };
     }
     // Sounds are short; a fast clip can finish before the first poll, so a
     // missed confirmation still reports success like volume writes do.
@@ -1693,16 +1663,6 @@ class DiscordBridge {
     const status = Number(error?.status ?? error?.code);
     if (status === 429) return true;
     return /rate.?limit|429|too many/i.test(String(error?.message || error || ""));
-  }
-
-  isPremiumSubscriptionError(error) {
-    const text = this.soundboardErrorText(error);
-    if (/premium\s+subscription/i.test(text)) return true;
-    try {
-      const bodyMsg = error?.body?.message;
-      if (typeof bodyMsg === "string" && /premium\s+subscription/i.test(bodyMsg)) return true;
-    } catch { /* ignore */ }
-    return false;
   }
 
   // Best-effort human text for Discord-shaped failures: message, then API
@@ -2020,8 +1980,9 @@ class DiscordBridge {
     };
   }
 
-  // Snapshot of soundboard dependencies: store, REST client, local-play
-  // action, readable sound count, and voice presence.
+  // Snapshot of soundboard dependencies: store, REST broadcast client,
+  // readable sound count, and voice presence. localPlay is
+  // diagnostics-only: playback never uses the local-only preview path.
   probeSoundboard() {
     const store = Boolean(this.getSoundboardStore());
     const restApi = Boolean(this.getRestApi());
@@ -2036,7 +1997,7 @@ class DiscordBridge {
     return {
       localPlay,
       localPlayArity: localPlay ? localPlayFn.length : null,
-      ready: store && restApi && localPlay,
+      ready: store && restApi,
       restApi,
       sounds,
       store,
